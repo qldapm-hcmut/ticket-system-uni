@@ -5,7 +5,7 @@ Luồng cốt lõi: tạo/duyệt sự kiện → đăng ký/hủy → giới h�
 
 ## Tech stack
 
-- Go 1.27+, Echo v4 (HTTP), PostgreSQL 16
+- Go 1.27+, Echo v4 (HTTP), PostgreSQL 16; Uber Fx cho dependency injection và lifecycle
 - `pgx/v5` + `pgxpool` (driver), `sqlc` (sinh code truy vấn), `golang-migrate` (migration)
 - `golang-jwt/jwt/v5` (JWT nội bộ) + Google OAuth 2.0 / OpenID Connect (xác minh Google ID token), `excelize` (xuất xlsx)
 - Docker Compose cho Postgres local
@@ -41,7 +41,7 @@ Trước khi báo xong một thay đổi: chạy `make sqlc` (nếu sửa query)
 Clean Architecture áp dụng có chọn lọc. Phụ thuộc chỉ đi một chiều: `adapter → app → domain`.
 
 ```
-cmd/api, cmd/worker            # composition root: nối adapter vào use case
+cmd/api, cmd/worker            # composition root: khai báo graph trực tiếp bằng Uber Fx (không bootstrap)
 internal/
   <module>/
     domain/                    # entity, quy tắc, lỗi nghiệp vụ — chỉ import stdlib + shared/kernel
@@ -64,6 +64,8 @@ Quy tắc bắt buộc:
 - Use case trả lỗi domain (`domain.ErrCancelDeadlinePassed`...). Chỉ `adapter/http` mới map sang HTTP status + `error.code`.
 - Không tạo interface khi chỉ có một chỗ dùng và không cần thay thế. Interface đặt ở phía dùng (`app/ports.go`), không đặt ở phía implement.
 - Lấy thời gian qua `kernel.Clock`, không gọi `time.Now()` trong `domain/` hay `app/`. Quy tắc 24h phải test được.
+
+Các module hạ tầng cung cấp `fx.Module`, constructor và lifecycle hooks. Fx quản lý startup/shutdown; dependency trả lỗi startup để Fx log, không tự gọi Fatal/os.Exit. HTTP và worker dừng trước pool DB. Không import Fx vào domain/app.
 
 ## Transaction
 

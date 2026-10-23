@@ -40,6 +40,49 @@ tags:
   - name: Notifications
 
 paths:
+  /health/live:
+    servers:
+      - url: http://localhost:3000
+    get:
+      operationId: liveness
+      summary: Process liveness (infrastructure, outside /api/v1)
+      security: []
+      responses:
+        '200':
+          description: Process is serving HTTP
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status: { type: string, const: ok }
+  /health/ready:
+    servers:
+      - url: http://localhost:3000
+    get:
+      operationId: readiness
+      summary: PostgreSQL readiness (infrastructure, outside /api/v1)
+      security: []
+      responses:
+        '200':
+          description: PostgreSQL is reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status: { type: string, const: ready }
+        '503':
+          description: SERVICE_UNAVAILABLE — database unavailable; no connection details exposed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   # ===================== AUTH =====================
   /auth/google:
     post:
@@ -1170,6 +1213,9 @@ components:
         - NOT_ELIGIBLE_FOR_CHECKIN
         - INVALID_QR
         - PRECONDITION_REQUIRED
+        - INTERNAL_ERROR
+        - METHOD_NOT_ALLOWED
+        - SERVICE_UNAVAILABLE
 
     # ---------- common ----------
     ErrorResponse:
