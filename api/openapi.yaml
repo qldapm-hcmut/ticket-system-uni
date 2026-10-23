@@ -1,0 +1,1559 @@
+openapi: 3.1.0
+info:
+  title: University Event Registration System API
+  version: 1.0.0
+  summary: API contract cho frontend — CO3011 L01 Nhóm 09
+  description: |
+    REST/JSON API cho hệ thống đăng ký sự kiện của trường.
+
+    **Quy ước chung**
+    - Field dạng `camelCase`; thời gian ISO 8601 có offset (`2026-11-05T08:00:00+07:00`), server lưu UTC.
+    - Xác thực: `Authorization: Bearer <accessToken>` (access token 15 phút, refresh token 7 ngày).
+    - Thành công: `{ "data": ..., "meta": ... }`. Lỗi: `{ "error": { "code", "message", "details" } }`.
+      Frontend xử lý theo `error.code`, không dựa vào `message`.
+    - Phân trang: `?page=1&pageSize=20` (tối đa 100), trả `meta` kiểu `PageMeta`.
+    - Sai role trả `403 FORBIDDEN`; tài nguyên ngoài phạm vi trả `404 NOT_FOUND` (không lộ việc tài nguyên tồn tại).
+    - Backend dự kiến dùng Go 1.27+, Echo v4, PostgreSQL 16; xác thực Google OAuth 2.0 / OpenID Connect.
+
+    **Quy tắc nghiệp vụ chính**
+    - Sinh viên tự hủy đăng ký đến 24h trước `startAt` (`cancelDeadline`); rời waitlist không bị giới hạn.
+    - Hết chỗ → tự vào waitlist; có chỗ trống → tự chuyển người đầu waitlist (FIFO) và gửi notification.
+    - Organizer không được duyệt sự kiện do chính mình tạo.
+    - Khi now >= startAt, WAITLISTED có trạng thái hiệu lực EXPIRED ngay, không promote;
+      API trả EXPIRED và waitlistCount/waitlisted = 0 dù worker chưa cập nhật DB.
+    - Notification/outbox được INSERT cùng transaction; INSERT lỗi rollback toàn bộ.
+      Chỉ lỗi gửi email sau commit không ảnh hưởng đăng ký/promote.
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Units & Users
+  - name: Events
+  - name: Approval
+  - name: Registrations
+  - name: Check-in
+  - name: Reports
+  - name: Notifications
+
+paths:
+  # ===================== AUTH =====================
+  /auth/google:
+    post:
+      tags: [Auth]
+      operationId: loginWithGoogle
+      summary: A1 — Đăng nhập tài khoản trường qua Google OAuth 2.0 / OpenID Connect
+      description: |
+        Nhận Google ID token từ Google Identity Services qua HTTPS. Backend xác minh chữ ký bằng Google JWKS,
+        iss hợp lệ, aud đúng Google client ID cấu hình, exp, email_verified = true,
+        hd = hcmut.edu.vn và domain email chính xác hcmut.edu.vn. hd phía frontend chỉ là gợi ý UX.
+        Token sai, sai domain, email chưa xác minh, user inactive hoặc xung đột liên kết → 401 UNAUTHENTICATED.
+        Định danh bằng Google sub duy nhất; lần đầu tạo STUDENT. Chỉ liên kết theo email đã xác minh
+        với user bootstrap chưa có sub; không ghi đè sub khác, không nhận role từ client.
+        Cấp access/refresh token nội bộ; không lưu Google access/refresh token. Không log token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Đăng nhập thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AuthTokens' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: A2 — Đổi refresh token lấy access token mới
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Token mới (refresh token được xoay vòng)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: A3 — Thu hồi refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: Đã đăng xuất }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: A4 — Thông tin user hiện tại + đơn vị và vai trò
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  # ===================== UNITS & USERS =====================
+  /units:
+    get:
+      tags: [Units & Users]
+      operationId: listUnits
+      summary: U1 — Danh sách đơn vị (dùng để lọc sự kiện)
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/UnitType' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Unit' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /admin/units:
+    post:
+      tags: [Units & Users]
+      operationId: createUnit
+      summary: U2 — Tạo đơn vị (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UnitCreate' }
+      responses:
+        '201':
+          description: Đã tạo
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Unit' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/units/{unitId}/members:
+    put:
+      tags: [Units & Users]
+      operationId: setUnitMembers
+      summary: U3 — Gán Organizer/Approver cho đơn vị (Admin), thay thế toàn bộ danh sách
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [members]
+              properties:
+                members:
+                  type: array
+                  items:
+                    type: object
+                    required: [userId, memberRole]
+                    properties:
+                      userId: { type: string, format: uuid }
+                      memberRole: { $ref: '#/components/schemas/MembershipRole' }
+      responses:
+        '200':
+          description: Danh sách thành viên sau khi cập nhật
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UnitMember' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users:
+    get:
+      tags: [Units & Users]
+      operationId: listUsers
+      summary: U4 — Tìm user (Admin)
+      parameters:
+        - name: q
+          in: query
+          description: Tìm theo tên, email hoặc MSSV
+          schema: { type: string }
+        - name: role
+          in: query
+          schema: { $ref: '#/components/schemas/UserRole' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{userId}:
+    patch:
+      tags: [Units & Users]
+      operationId: updateUser
+      summary: U5 — Đổi role / trạng thái tài khoản (Admin)
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                role: { $ref: '#/components/schemas/UserRole' }
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== EVENTS =====================
+  /events:
+    get:
+      tags: [Events]
+      operationId: listPublishedEvents
+      summary: E1 — Danh mục sự kiện PUBLISHED (sinh viên)
+      parameters:
+        - name: q
+          in: query
+          description: Tìm theo tiêu đề
+          schema: { type: string }
+        - name: unitId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          description: startAt >= from
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: startAt <= to
+          schema: { type: string, format: date-time }
+        - name: availableOnly
+          in: query
+          description: Chỉ sự kiện còn chỗ hoặc còn nhận waitlist
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Sắp theo startAt tăng dần
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [Events]
+      operationId: createEvent
+      summary: E4 — Tạo sự kiện ở trạng thái DRAFT (Organizer của unitId)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventCreate' }
+      responses:
+        '201':
+          description: Đã tạo
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /events/{eventId}:
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: E2 — Chi tiết sự kiện (kèm myRegistration nếu là sinh viên)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Events]
+      operationId: updateEvent
+      summary: E5 — Sửa sự kiện (cần If-Match)
+      description: |
+        - DRAFT / REJECTED: sửa mọi field.
+        - PENDING_APPROVAL: `409 INVALID_STATE_TRANSITION`.
+        - PUBLISHED: sửa không cần duyệt lại. Từ 60 phút trước `startAt` (cửa sổ check-in), đổi `startAt`/`endAt`
+          → `409 INVALID_STATE_TRANSITION`; `location` vẫn sửa được. Đổi `startAt`, `endAt`, `location` → notify người đăng ký
+          (`meta.significantChange = true`). Tăng `capacity` → tự promote waitlist; giảm dưới
+          `registeredCount` → `409 CAPACITY_BELOW_REGISTERED`.
+        - CANCELLED / COMPLETED: `409 INVALID_STATE_TRANSITION`.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+                  meta:
+                    type: object
+                    required: [significantChange, notifiedCount, promotedCount]
+                    properties:
+                      significantChange: { type: boolean }
+                      notifiedCount: { type: integer, minimum: 0 }
+                      promotedCount: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428':
+          description: Thiếu header If-Match
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    delete:
+      tags: [Events]
+      operationId: deleteDraftEvent
+      summary: E6 — Xóa sự kiện, chỉ khi DRAFT
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '204': { description: Đã xóa }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /manage/events:
+    get:
+      tags: [Events]
+      operationId: listManagedEvents
+      summary: E3 — Sự kiện mọi trạng thái trong đơn vị được giao (Organizer, Admin)
+      parameters:
+        - name: status
+          in: query
+          description: Nhiều giá trị phân cách dấu phẩy, vd `DRAFT,REJECTED`
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/EventStatus' }
+        - name: unitId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /events/{eventId}/cancel:
+    post:
+      tags: [Events]
+      operationId: cancelEvent
+      summary: E7 — Hủy sự kiện đã công bố
+      description: PUBLISHED → CANCELLED; mọi REGISTERED/WAITLISTED → CANCELLED_BY_EVENT và nhận notification.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+                  meta:
+                    type: object
+                    required: [affectedCount]
+                    properties:
+                      affectedCount: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ===================== APPROVAL =====================
+  /events/{eventId}/submit:
+    post:
+      tags: [Approval]
+      operationId: submitEvent
+      summary: P1 — Gửi duyệt (DRAFT/REJECTED → PENDING_APPROVAL)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /approvals/pending:
+    get:
+      tags: [Approval]
+      operationId: listPendingApprovals
+      summary: P2 — Hàng chờ duyệt trong đơn vị được giao (Admin)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Sắp theo thời điểm gửi duyệt, cũ nhất trước
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /events/{eventId}/approve:
+    post:
+      tags: [Approval]
+      operationId: approveEvent
+      summary: P3 — Duyệt và công bố (Admin, không phải người tạo)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: status = PUBLISHED
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: FORBIDDEN hoặc SELF_APPROVAL_NOT_ALLOWED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+
+  /events/{eventId}/reject:
+    post:
+      tags: [Approval]
+      operationId: rejectEvent
+      summary: P4 — Từ chối, bắt buộc lý do (Admin)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200':
+          description: status = REJECTED
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /events/{eventId}/approval-logs:
+    get:
+      tags: [Approval]
+      operationId: listApprovalLogs
+      summary: P5 — Lịch sử submit/approve/reject
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '200':
+          description: Sắp theo thời gian tăng dần
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApprovalLog' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== REGISTRATIONS =====================
+  /events/{eventId}/registrations:
+    post:
+      tags: [Registrations]
+      operationId: registerForEvent
+      summary: R1 — Đăng ký (tự vào waitlist nếu hết chỗ)
+      description: |
+        Không có body; sinh viên lấy từ token. Kết quả `status` là `REGISTERED` hoặc `WAITLISTED`.
+        Lỗi: `409 ALREADY_REGISTERED` (kèm `details.registrationId`), `409 EVENT_FULL`, `422 REGISTRATION_CLOSED`.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '201':
+          description: Đã đăng ký hoặc đã vào waitlist
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Registration' }
+              examples:
+                registered:
+                  value:
+                    data:
+                      id: 5b0f6d3e-2f1a-4c55-9a51-0d7d1f0b3a11
+                      eventId: e7a1c2d4-0000-4000-8000-000000000001
+                      status: REGISTERED
+                      waitlistPosition: null
+                      checkinCode: K7Q2-M9XD
+                      createdAt: '2026-10-26T09:15:00+07:00'
+                waitlisted:
+                  value:
+                    data:
+                      id: 6c1a7e4f-3a2b-4d66-8b62-1e8e2a1c4b22
+                      eventId: e7a1c2d4-0000-4000-8000-000000000001
+                      status: WAITLISTED
+                      waitlistPosition: 8
+                      checkinCode: null
+                      createdAt: '2026-10-26T09:16:00+07:00'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+    get:
+      tags: [Registrations]
+      operationId: listEventRegistrations
+      summary: R5 — Danh sách đăng ký / waitlist của sự kiện (Organizer, Admin)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RegistrationStatus' }
+        - name: q
+          in: query
+          description: Tìm theo tên hoặc MSSV
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Waitlist sắp theo thứ tự vào hàng (FIFO)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RegistrationListItem' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /registrations/{registrationId}:
+    get:
+      tags: [Registrations]
+      operationId: getRegistration
+      summary: R4 — Chi tiết đăng ký + QR token (chủ sở hữu hoặc Organizer)
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/RegistrationDetail' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /registrations/{registrationId}/cancel:
+    post:
+      tags: [Registrations]
+      operationId: cancelRegistration
+      summary: R2 — Hủy đăng ký / rời waitlist (tự promote người đầu waitlist)
+      description: |
+        - Sinh viên chủ sở hữu: hủy REGISTERED chỉ khi `now < cancelDeadline`, ngược lại `422 CANCEL_DEADLINE_PASSED`.
+          Rời waitlist không bị giới hạn thời gian.
+        - Organizer của đơn vị: hủy hộ bất kỳ lúc nào trước `startAt`, bắt buộc `reason`.
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 255 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { $ref: '#/components/schemas/Registration' }
+                  meta:
+                    type: object
+                    required: [promotedRegistrationId]
+                    properties:
+                      promotedRegistrationId:
+                        type: [string, 'null']
+                        format: uuid
+                        description: Registration vừa được chuyển từ waitlist (null nếu không có)
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+
+  /me/registrations:
+    get:
+      tags: [Registrations]
+      operationId: listMyRegistrations
+      summary: R3 — Đăng ký của tôi (sinh viên)
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RegistrationStatus' }
+        - name: upcoming
+          in: query
+          description: Chỉ sự kiện chưa kết thúc
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/MyRegistrationItem' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  # ===================== CHECK-IN =====================
+  /events/{eventId}/check-ins:
+    post:
+      tags: [Check-in]
+      operationId: checkIn
+      summary: C1 — Check-in bằng QR, mã nhập tay hoặc xác nhận thủ công (Organizer)
+      description: |
+        Cửa sổ check-in: từ 60 phút trước `startAt` đến `endAt`.
+        Mã nhập tay không phân biệt hoa thường, bỏ qua dấu `-`. MANUAL bắt buộc `note`.
+        Lỗi: `409 ALREADY_CHECKED_IN` (kèm `details.checkedInAt`, `details.checkedInBy`), `422 INVALID_QR`,
+        `422 NOT_ELIGIBLE_FOR_CHECKIN`, `422 CHECKIN_WINDOW_CLOSED`.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckInRequest' }
+            examples:
+              qr:
+                value: { method: QR, qrToken: 'v1.5b0f6d3e-2f1a-4c55-9a51-0d7d1f0b3a11.e7a1c2d4-0000-4000-8000-000000000001.3f9c0b2a1d' }
+              code:
+                value: { method: CODE, checkinCode: K7Q2M9XD }
+              manual:
+                value: { method: MANUAL, registrationId: 5b0f6d3e-2f1a-4c55-9a51-0d7d1f0b3a11, note: 'SV quên điện thoại, đã đối chiếu thẻ SV' }
+      responses:
+        '201':
+          description: Check-in thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/CheckIn' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+    get:
+      tags: [Check-in]
+      operationId: listCheckIns
+      summary: C2 — Danh sách đã check-in (Organizer, Admin)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+        - name: method
+          in: query
+          schema: { $ref: '#/components/schemas/CheckInMethod' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Mới nhất trước
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CheckIn' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /registrations/{registrationId}/check-in:
+    delete:
+      tags: [Check-in]
+      operationId: undoCheckIn
+      summary: C3 — Hoàn tác check-in nhầm (Organizer, ghi activity log)
+      description: Đưa các cột checked_in_* của đăng ký về null. Đăng ký chưa check-in → 404.
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '204': { description: Đã hoàn tác }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== REPORTS =====================
+  /events/{eventId}/reports/summary:
+    get:
+      tags: [Reports]
+      operationId: getEventSummary
+      summary: B1 — Thống kê số lượng (Organizer, Admin)
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ReportSummary' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /events/{eventId}/exports/{kind}:
+    get:
+      tags: [Reports]
+      operationId: exportEventData
+      summary: B2 — Xuất danh sách đăng ký / điểm danh ra CSV hoặc XLSX
+      description: |
+        Trả file trực tiếp với `Content-Disposition: attachment`. CSV có BOM UTF-8 để Excel đọc đúng tiếng Việt.
+        Cột `attendance`: STT, MSSV, Họ tên, Email, Trạng thái đăng ký, Thời gian check-in, Phương thức.
+        Mỗi lần xuất được ghi audit log.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [registrations, attendance]
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [csv, xlsx]
+            default: xlsx
+      responses:
+        '200':
+          description: File
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              example: attachment; filename="attendance_e7a1c2d4.xlsx"
+          content:
+            text/csv:
+              schema: { type: string }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, contentMediaType: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===================== NOTIFICATIONS =====================
+  /me/notifications:
+    get:
+      tags: [Notifications]
+      operationId: listMyNotifications
+      summary: N1 — Thông báo in-app
+      parameters:
+        - name: unread
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Mới nhất trước
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  meta:
+                    allOf:
+                      - $ref: '#/components/schemas/PageMeta'
+                      - type: object
+                        required: [unreadCount]
+                        properties:
+                          unreadCount: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /me/notifications/read:
+    post:
+      tags: [Notifications]
+      operationId: markNotificationsRead
+      summary: N2 — Đánh dấu đã đọc
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [ids]
+                  properties:
+                    ids:
+                      type: array
+                      minItems: 1
+                      items: { type: string, format: uuid }
+                - type: object
+                  required: [all]
+                  properties:
+                    all: { type: boolean, const: true }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [updatedCount, unreadCount]
+                    properties:
+                      updatedCount: { type: integer, minimum: 0 }
+                      unreadCount: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RegistrationId:
+      name: registrationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UnitId:
+      name: unitId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Giá trị `version` hiện tại của sự kiện (optimistic lock)
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    ValidationError:
+      description: VALIDATION_ERROR — body/query sai; xem `details.fields`
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Dữ liệu không hợp lệ.
+              details:
+                fields:
+                  - { field: endAt, message: endAt phải sau startAt }
+    Unauthenticated:
+      description: UNAUTHENTICATED — thiếu hoặc hết hạn token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: FORBIDDEN — sai role cho thao tác; tài nguyên ngoài đơn vị/phạm vi trả 404 NOT_FOUND
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: NOT_FOUND — không tồn tại hoặc ngoài phạm vi được xem
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: |
+        Một trong: ALREADY_REGISTERED, EVENT_FULL, INVALID_STATE_TRANSITION, CAPACITY_BELOW_REGISTERED,
+        VERSION_CONFLICT, ALREADY_CHECKED_IN
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: ALREADY_CHECKED_IN
+              message: Sinh viên đã check-in.
+              details: { checkedInAt: '2026-11-05T07:52:10+07:00', checkedInBy: Trần Thị B }
+    BusinessRuleViolation:
+      description: |
+        Một trong: REGISTRATION_CLOSED, CANCEL_DEADLINE_PASSED, CHECKIN_WINDOW_CLOSED,
+        NOT_ELIGIBLE_FOR_CHECKIN, INVALID_QR, VALIDATION_ERROR
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            error:
+              code: CANCEL_DEADLINE_PASSED
+              message: Chỉ được hủy trước giờ bắt đầu 24 giờ.
+              details: { deadline: '2026-11-04T08:00:00+07:00' }
+
+  schemas:
+    # ---------- enums ----------
+    UserRole:
+      type: string
+      enum: [STUDENT, ORGANIZER, ADMIN]
+    UnitType:
+      type: string
+      enum: [FACULTY, CLUB, DEPARTMENT]
+    MembershipRole:
+      type: string
+      enum: [ORGANIZER, APPROVER]
+    EventStatus:
+      type: string
+      enum: [DRAFT, PENDING_APPROVAL, REJECTED, PUBLISHED, CANCELLED, COMPLETED]
+    RegistrationStatus:
+      type: string
+      enum: [REGISTERED, WAITLISTED, CANCELLED, CANCELLED_BY_EVENT, EXPIRED]
+    CancelActor:
+      type: string
+      enum: [STUDENT, ORGANIZER, SYSTEM]
+    CheckInMethod:
+      type: string
+      enum: [QR, CODE, MANUAL]
+    ApprovalAction:
+      type: string
+      enum: [SUBMIT, APPROVE, REJECT]
+    NotificationType:
+      type: string
+      enum: [REGISTERED, WAITLISTED, PROMOTED, REG_CANCELLED, EVENT_CHANGED, EVENT_CANCELLED, EVENT_APPROVED, EVENT_REJECTED, REMINDER]
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_ERROR
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - SELF_APPROVAL_NOT_ALLOWED
+        - NOT_FOUND
+        - ALREADY_REGISTERED
+        - EVENT_FULL
+        - INVALID_STATE_TRANSITION
+        - CAPACITY_BELOW_REGISTERED
+        - VERSION_CONFLICT
+        - ALREADY_CHECKED_IN
+        - REGISTRATION_CLOSED
+        - CANCEL_DEADLINE_PASSED
+        - CHECKIN_WINDOW_CLOSED
+        - NOT_ELIGIBLE_FOR_CHECKIN
+        - INVALID_QR
+        - PRECONDITION_REQUIRED
+
+    # ---------- common ----------
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+    PageMeta:
+      type: object
+      required: [page, pageSize, totalItems, totalPages]
+      properties:
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1 }
+        totalItems: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+
+    # ---------- auth & users ----------
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+          minLength: 1
+          description: Google ID token (không phải access token); backend bắt buộc xác minh OIDC và domain trường.
+    AuthTokens:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Số giây access token còn hiệu lực, example: 900 }
+        user: { $ref: '#/components/schemas/User' }
+    UserSummary:
+      type: object
+      required: [id, fullName]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+    StudentSummary:
+      type: object
+      required: [id, fullName, studentCode, email]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        studentCode: { type: string, example: '2210001' }
+        email: { type: string, format: email }
+    User:
+      type: object
+      required: [id, email, fullName, role, isActive, units]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        studentCode: { type: [string, 'null'] }
+        role: { $ref: '#/components/schemas/UserRole' }
+        isActive: { type: boolean }
+        units:
+          type: array
+          description: Đơn vị và vai trò được giao (rỗng với sinh viên)
+          items:
+            type: object
+            required: [unit, memberRole]
+            properties:
+              unit: { $ref: '#/components/schemas/UnitRef' }
+              memberRole: { $ref: '#/components/schemas/MembershipRole' }
+
+    # ---------- units ----------
+    UnitRef:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: CSE }
+        name: { type: string, example: Khoa KH&KT Máy tính }
+    Unit:
+      allOf:
+        - $ref: '#/components/schemas/UnitRef'
+        - type: object
+          required: [type, isActive]
+          properties:
+            type: { $ref: '#/components/schemas/UnitType' }
+            isActive: { type: boolean }
+    UnitCreate:
+      type: object
+      required: [code, name, type]
+      properties:
+        code: { type: string, maxLength: 30 }
+        name: { type: string, maxLength: 200 }
+        type: { $ref: '#/components/schemas/UnitType' }
+    UnitMember:
+      type: object
+      required: [user, memberRole]
+      properties:
+        user: { $ref: '#/components/schemas/UserSummary' }
+        memberRole: { $ref: '#/components/schemas/MembershipRole' }
+
+    # ---------- events ----------
+    EventCreate:
+      type: object
+      required: [unitId, title, location, startAt, endAt, registrationOpensAt, registrationClosesAt, capacity]
+      description: |
+        Ràng buộc: endAt > startAt; registrationOpensAt < registrationClosesAt <= startAt; startAt ở tương lai.
+      properties:
+        unitId: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, 'null'] }
+        location: { type: string, minLength: 1, maxLength: 255 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        registrationOpensAt: { type: string, format: date-time }
+        registrationClosesAt: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1, maximum: 5000 }
+        waitlistLimit:
+          type: [integer, 'null']
+          minimum: 0
+          description: null = không giới hạn
+    EventUpdate:
+      type: object
+      minProperties: 1
+      description: Tập con các field của EventCreate (không đổi được unitId)
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, 'null'] }
+        location: { type: string, minLength: 1, maxLength: 255 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        registrationOpensAt: { type: string, format: date-time }
+        registrationClosesAt: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1, maximum: 5000 }
+        waitlistLimit: { type: [integer, 'null'], minimum: 0 }
+    MyRegistrationRef:
+      type: object
+      required: [id, status, waitlistPosition]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/RegistrationStatus' }
+        waitlistPosition: { type: [integer, 'null'], minimum: 1 }
+    Event:
+      type: object
+      required:
+        - id
+        - unit
+        - title
+        - location
+        - startAt
+        - endAt
+        - registrationOpensAt
+        - registrationClosesAt
+        - capacity
+        - registeredCount
+        - waitlistCount
+        - availableSeats
+        - isRegistrationOpen
+        - cancelDeadline
+        - status
+      properties:
+        id: { type: string, format: uuid }
+        unit: { $ref: '#/components/schemas/UnitRef' }
+        title: { type: string }
+        description: { type: [string, 'null'] }
+        location: { type: string }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        registrationOpensAt: { type: string, format: date-time }
+        registrationClosesAt: { type: string, format: date-time }
+        capacity: { type: integer }
+        waitlistLimit: { type: [integer, 'null'] }
+        registeredCount: { type: integer }
+        waitlistCount:
+          type: integer
+          minimum: 0
+          description: Số WAITLISTED còn hiệu lực; trả 0 khi now >= startAt dù bộ đếm DB chưa được worker đồng bộ.
+        availableSeats: { type: integer, description: capacity - registeredCount }
+        isRegistrationOpen:
+          type: boolean
+          description: PUBLISHED và now() nằm trong cửa sổ đăng ký
+        cancelDeadline:
+          type: string
+          format: date-time
+          description: startAt - 24h; sau mốc này sinh viên không tự hủy được
+        status: { $ref: '#/components/schemas/EventStatus' }
+        cancelReason: { type: [string, 'null'] }
+        rejectReason:
+          type: [string, 'null']
+          description: Lý do từ chối gần nhất; chỉ trả cho Organizer/Admin
+        version:
+          type: integer
+          description: Chỉ trả cho Organizer/Admin; gửi lại qua header If-Match khi PATCH
+        createdBy:
+          description: Chỉ trả cho Organizer/Admin
+          $ref: '#/components/schemas/UserSummary'
+        approvedBy:
+          description: Chỉ trả cho Organizer/Admin
+          oneOf:
+            - $ref: '#/components/schemas/UserSummary'
+            - type: 'null'
+        myRegistration:
+          description: Chỉ trả cho sinh viên; null nếu chưa có đăng ký còn hiệu lực
+          oneOf:
+            - $ref: '#/components/schemas/MyRegistrationRef'
+            - type: 'null'
+    EventBrief:
+      type: object
+      required: [id, title, startAt, endAt, location, status]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        location: { type: string }
+        status: { $ref: '#/components/schemas/EventStatus' }
+    ApprovalLog:
+      type: object
+      description: Bản ghi activity_logs có action SUBMIT / APPROVE / REJECT
+      required: [id, action, actor, createdAt]
+      properties:
+        id: { type: integer, format: int64 }
+        action: { $ref: '#/components/schemas/ApprovalAction' }
+        actor: { $ref: '#/components/schemas/UserSummary' }
+        comment: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+
+    # ---------- registrations ----------
+    Registration:
+      type: object
+      required: [id, eventId, status, waitlistPosition, checkinCode, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/RegistrationStatus' }
+        waitlistPosition:
+          type: [integer, 'null']
+          minimum: 1
+          description: Chỉ có giá trị khi WAITLISTED
+        checkinCode:
+          type: [string, 'null']
+          pattern: '^[0-9A-Z]{4}-[0-9A-Z]{4}$'
+          description: Mã nhập tay, chỉ hiển thị khi REGISTERED
+          example: K7Q2-M9XD
+        promotedAt: { type: [string, 'null'], format: date-time }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+        cancelledBy:
+          oneOf:
+            - $ref: '#/components/schemas/CancelActor'
+            - type: 'null'
+        createdAt: { type: string, format: date-time }
+    RegistrationDetail:
+      allOf:
+        - $ref: '#/components/schemas/Registration'
+        - type: object
+          required: [qrToken, checkIn, event]
+          properties:
+            qrToken:
+              type: [string, 'null']
+              description: |
+                Chỉ khi REGISTERED. Định dạng `v1.<registrationId>.<eventId>.<hmac>`; frontend tự vẽ QR từ chuỗi này.
+            checkIn:
+              description: null nếu chưa check-in
+              oneOf:
+                - type: object
+                  required: [checkedInAt, method]
+                  properties:
+                    checkedInAt: { type: string, format: date-time }
+                    method: { $ref: '#/components/schemas/CheckInMethod' }
+                - type: 'null'
+            event: { $ref: '#/components/schemas/EventBrief' }
+    MyRegistrationItem:
+      allOf:
+        - $ref: '#/components/schemas/Registration'
+        - type: object
+          required: [event]
+          properties:
+            event: { $ref: '#/components/schemas/EventBrief' }
+    RegistrationListItem:
+      type: object
+      required: [id, student, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        student: { $ref: '#/components/schemas/StudentSummary' }
+        status: { $ref: '#/components/schemas/RegistrationStatus' }
+        waitlistPosition: { type: [integer, 'null'], minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        promotedAt: { type: [string, 'null'], format: date-time }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+        checkedInAt: { type: [string, 'null'], format: date-time }
+
+    # ---------- check-in ----------
+    CheckInRequest:
+      oneOf:
+        - $ref: '#/components/schemas/CheckInByQr'
+        - $ref: '#/components/schemas/CheckInByCode'
+        - $ref: '#/components/schemas/CheckInManual'
+      discriminator:
+        propertyName: method
+        mapping:
+          QR: '#/components/schemas/CheckInByQr'
+          CODE: '#/components/schemas/CheckInByCode'
+          MANUAL: '#/components/schemas/CheckInManual'
+    CheckInByQr:
+      type: object
+      required: [method, qrToken]
+      properties:
+        method: { type: string, const: QR }
+        qrToken: { type: string }
+    CheckInByCode:
+      type: object
+      required: [method, checkinCode]
+      properties:
+        method: { type: string, const: CODE }
+        checkinCode:
+          type: string
+          description: Không phân biệt hoa thường, bỏ qua dấu '-'
+          example: K7Q2M9XD
+    CheckInManual:
+      type: object
+      required: [method, registrationId, note]
+      properties:
+        method: { type: string, const: MANUAL }
+        registrationId: { type: string, format: uuid }
+        note: { type: string, minLength: 1, maxLength: 255 }
+    CheckIn:
+      type: object
+      description: Thông tin check-in lưu trên chính đăng ký (không có id riêng)
+      required: [registrationId, method, checkedInAt, student, checkedInBy]
+      properties:
+        registrationId: { type: string, format: uuid }
+        method: { $ref: '#/components/schemas/CheckInMethod' }
+        checkedInAt: { type: string, format: date-time }
+        note: { type: [string, 'null'] }
+        student:
+          type: object
+          required: [fullName, studentCode]
+          properties:
+            fullName: { type: string }
+            studentCode: { type: string }
+        checkedInBy: { $ref: '#/components/schemas/UserSummary' }
+
+    # ---------- reports ----------
+    ReportSummary:
+      type: object
+      required: [capacity, registered, waitlisted, cancelled, promotedFromWaitlist, checkedIn, attendanceRate, checkInByMethod, generatedAt]
+      properties:
+        capacity: { type: integer }
+        registered: { type: integer }
+        waitlisted:
+          type: integer
+          minimum: 0
+          description: Số WAITLISTED còn hiệu lực; trả 0 khi now >= startAt, không chờ worker.
+        cancelled: { type: integer }
+        promotedFromWaitlist: { type: integer }
+        checkedIn: { type: integer }
+        attendanceRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 'registered == 0 thì trả 0; trường hợp khác checkedIn / registered.'
+        checkInByMethod:
+          type: object
+          required: [QR, CODE, MANUAL]
+          properties:
+            QR: { type: integer }
+            CODE: { type: integer }
+            MANUAL: { type: integer }
+        generatedAt: { type: string, format: date-time }
+
+    # ---------- notifications ----------
+    Notification:
+      type: object
+      required: [id, type, title, body, readAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        eventId: { type: [string, 'null'], format: uuid }
+        title: { type: string }
+        body: { type: string }
+        readAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
