@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: University Event Registration System API
-  version: 1.0.0
+  version: 1.1.0
   summary: API contract cho frontend — CO3011 L01 Nhóm 09
   description: |
     REST/JSON API cho hệ thống đăng ký sự kiện của trường.
@@ -12,13 +12,15 @@ info:
     - Thành công: `{ "data": ..., "meta": ... }`. Lỗi: `{ "error": { "code", "message", "details" } }`.
       Frontend xử lý theo `error.code`, không dựa vào `message`.
     - Phân trang: `?page=1&pageSize=20` (tối đa 100), trả `meta` kiểu `PageMeta`.
-    - Sai role trả `403 FORBIDDEN`; tài nguyên ngoài phạm vi trả `404 NOT_FOUND` (không lộ việc tài nguyên tồn tại).
+    - Thiếu vai trò cần cho thao tác trả `403 FORBIDDEN`; tài nguyên ngoài phạm vi trả `404 NOT_FOUND` (không lộ việc tài nguyên tồn tại).
+    - Vai trò là chồng lấn và suy ra từ dữ liệu: STUDENT = có MSSV (`studentCode`), ORGANIZER = được gán ít nhất một đơn vị,
+      ADMIN = `isAdmin`. Một user có thể có nhiều vai trò (`User.roles`) và được hợp quyền. Vai trò không nằm trong JWT mà tra DB mỗi request.
     - Backend dự kiến dùng Go 1.27+, Echo v4, PostgreSQL 16; xác thực Google OAuth 2.0 / OpenID Connect.
 
     **Quy tắc nghiệp vụ chính**
-    - Sinh viên tự hủy đăng ký đến 24h trước `startAt` (`cancelDeadline`); rời waitlist không bị giới hạn.
+    - Sinh viên tự hủy REGISTERED trước `startAt - 24h`; trong 24h cuối, nếu Organizer sửa thời gian/địa điểm, các đăng ký có trước thay đổi được quyền hủy tới trước `startAt` mới. Rời waitlist không bị hạn 24h.
     - Hết chỗ → tự vào waitlist; có chỗ trống → tự chuyển người đầu waitlist (FIFO) và gửi notification.
-    - Organizer không được duyệt sự kiện do chính mình tạo.
+    - Không ai được duyệt sự kiện do chính mình tạo; Organizer không được check-in cho đăng ký của chính mình.
     - Khi now >= startAt, WAITLISTED có trạng thái hiệu lực EXPIRED ngay, không promote;
       API trả EXPIRED và waitlistCount/waitlisted = 0 dù worker chưa cập nhật DB.
     - Notification/outbox được INSERT cùng transaction; INSERT lỗi rollback toàn bộ.
@@ -94,8 +96,9 @@ paths:
         iss hợp lệ, aud đúng Google client ID cấu hình, exp, email_verified = true,
         hd = hcmut.edu.vn và domain email chính xác hcmut.edu.vn. hd phía frontend chỉ là gợi ý UX.
         Token sai, sai domain, email chưa xác minh, user inactive hoặc xung đột liên kết → 401 UNAUTHENTICATED.
-        Định danh bằng Google sub duy nhất; lần đầu tạo STUDENT. Chỉ liên kết theo email đã xác minh
-        với user bootstrap chưa có sub; không ghi đè sub khác, không nhận role từ client.
+        Định danh bằng Google sub duy nhất. Lần đầu: nếu email có trong danh sách sinh viên đã import (user bootstrap
+        chưa có sub) thì liên kết theo email đã xác minh, user có MSSV nên là STUDENT; nếu không thì tạo user mới
+        không có MSSV, isAdmin = false, chưa có vai trò. Không ghi đè sub khác, không nhận MSSV/vai trò từ client.
         Cấp access/refresh token nội bộ; không lưu Google access/refresh token. Không log token.
       security: []
       requestBody:
@@ -206,6 +209,7 @@ paths:
     post:
       tags: [Units & Users]
       operationId: createUnit
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
       summary: U2 — Tạo đơn vị (Admin)
       requestBody:
         required: true
@@ -231,7 +235,8 @@ paths:
     put:
       tags: [Units & Users]
       operationId: setUnitMembers
-      summary: U3 — Gán Organizer/Approver cho đơn vị (Admin), thay thế toàn bộ danh sách
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
+      summary: U3 — Gán Organizer cho đơn vị (Admin cấp trường), thay thế toàn bộ danh sách
       parameters:
         - $ref: '#/components/parameters/UnitId'
       requestBody:
@@ -271,6 +276,7 @@ paths:
     get:
       tags: [Units & Users]
       operationId: listUsers
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
       summary: U4 — Tìm user (Admin)
       parameters:
         - name: q
@@ -279,6 +285,7 @@ paths:
           schema: { type: string }
         - name: role
           in: query
+          description: Lọc user đang có vai trò này (một user có thể có nhiều vai trò)
           schema: { $ref: '#/components/schemas/UserRole' }
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
@@ -302,7 +309,8 @@ paths:
     patch:
       tags: [Units & Users]
       operationId: updateUser
-      summary: U5 — Đổi role / trạng thái tài khoản (Admin)
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
+      summary: U5 — Đổi trạng thái tài khoản (Admin); cấp isAdmin chỉ qua đội dev
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -313,7 +321,6 @@ paths:
               type: object
               minProperties: 1
               properties:
-                role: { $ref: '#/components/schemas/UserRole' }
                 isActive: { type: boolean }
       responses:
         '200':
@@ -421,9 +428,10 @@ paths:
       description: |
         - DRAFT / REJECTED: sửa mọi field.
         - PENDING_APPROVAL: `409 INVALID_STATE_TRANSITION`.
-        - PUBLISHED: sửa không cần duyệt lại. Từ 60 phút trước `startAt` (cửa sổ check-in), đổi `startAt`/`endAt`
-          → `409 INVALID_STATE_TRANSITION`; `location` vẫn sửa được. Đổi `startAt`, `endAt`, `location` → notify người đăng ký
-          (`meta.significantChange = true`). Tăng `capacity` → tự promote waitlist; giảm dưới
+        - PUBLISHED: sửa không cần duyệt lại. Từ 60 phút trước `startAt` (cửa sổ check-in), đổi `startAt`, `endAt` hoặc `location`
+          → `409 INVALID_STATE_TRANSITION` (xét theo startAt cũ). Mọi thay đổi các field này đều ghi audit và notify REGISTERED + WAITLISTED
+          (`meta.significantChange = true`). Chỉ thay đổi trong 24h trước startAt cũ mới cấp thêm ngoại lệ hủy đến trước `startAt` mới
+          cho các registration REGISTERED hiện hữu, cùng transaction; WAITLISTED không được cấp ngoại lệ, promote không tự sinh ngoại lệ. Tăng `capacity` → tự promote waitlist; giảm dưới
           `registeredCount` → `409 CAPACITY_BELOW_REGISTERED`.
         - CANCELLED / COMPLETED: `409 INVALID_STATE_TRANSITION`.
       parameters:
@@ -478,7 +486,7 @@ paths:
     get:
       tags: [Events]
       operationId: listManagedEvents
-      summary: E3 — Sự kiện mọi trạng thái trong đơn vị được giao (Organizer, Admin)
+      summary: E3 — Organizer xem theo đơn vị; Admin xem toàn trường
       parameters:
         - name: status
           in: query
@@ -576,7 +584,8 @@ paths:
     get:
       tags: [Approval]
       operationId: listPendingApprovals
-      summary: P2 — Hàng chờ duyệt trong đơn vị được giao (Admin)
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
+      summary: P2 — Hàng chờ duyệt toàn trường (Admin cấp trường)
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
@@ -600,6 +609,7 @@ paths:
     post:
       tags: [Approval]
       operationId: approveEvent
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
       summary: P3 — Duyệt và công bố (Admin, không phải người tạo)
       parameters:
         - $ref: '#/components/parameters/EventId'
@@ -635,6 +645,7 @@ paths:
     post:
       tags: [Approval]
       operationId: rejectEvent
+      description: Admin là quản trị viên cấp trường; không yêu cầu membership đơn vị.
       summary: P4 — Từ chối, bắt buộc lý do (Admin)
       parameters:
         - $ref: '#/components/parameters/EventId'
@@ -692,7 +703,8 @@ paths:
       operationId: registerForEvent
       summary: R1 — Đăng ký (tự vào waitlist nếu hết chỗ)
       description: |
-        Không có body; sinh viên lấy từ token. Kết quả `status` là `REGISTERED` hoặc `WAITLISTED`.
+        Không có body; sinh viên lấy từ token. Người gọi phải có vai trò STUDENT (có MSSV), nếu không `403 FORBIDDEN`.
+        Organizer kiêm sinh viên đăng ký được như sinh viên thường. Kết quả `status` là `REGISTERED` hoặc `WAITLISTED`.
         Lỗi: `409 ALREADY_REGISTERED` (kèm `details.registrationId`), `409 EVENT_FULL`, `422 REGISTRATION_CLOSED`.
       parameters:
         - $ref: '#/components/parameters/EventId'
@@ -787,9 +799,10 @@ paths:
       operationId: cancelRegistration
       summary: R2 — Hủy đăng ký / rời waitlist (tự promote người đầu waitlist)
       description: |
-        - Sinh viên chủ sở hữu: hủy REGISTERED chỉ khi `now < cancelDeadline`, ngược lại `422 CANCEL_DEADLINE_PASSED`.
-          Rời waitlist không bị giới hạn thời gian.
-        - Organizer của đơn vị: hủy hộ bất kỳ lúc nào trước `startAt`, bắt buộc `reason`.
+        - Sinh viên chủ sở hữu: hủy REGISTERED khi `now < cancelDeadline`, hoặc khi `now < startAt` và `now < cancellationExceptionUntil` (ngoại lệ Q19 dành cho người đã đăng ký trước lần sửa thời gian/địa điểm trong 24h cuối); ngược lại `422 CANCEL_DEADLINE_PASSED`.
+          Rời waitlist không chịu hạn 24h nhưng chỉ trước startAt; từ startAt có trạng thái hiệu lực EXPIRED.
+        - Organizer của đơn vị: hủy hộ bất kỳ lúc nào trước `startAt`, bắt buộc `reason`. Nếu đăng ký là của chính
+          Organizer đó thì xử lý như sinh viên tự hủy (áp hạn 24h, `cancelledBy = STUDENT`).
       parameters:
         - $ref: '#/components/parameters/RegistrationId'
       requestBody:
@@ -859,11 +872,13 @@ paths:
     post:
       tags: [Check-in]
       operationId: checkIn
+      x-role-policy: Chỉ ORGANIZER thuộc đơn vị của event, trừ đăng ký của chính mình; vai trò ADMIN không cho quyền check-in.
       summary: C1 — Check-in bằng QR, mã nhập tay hoặc xác nhận thủ công (Organizer)
       description: |
         Cửa sổ check-in: từ 60 phút trước `startAt` đến `endAt`.
         Mã nhập tay không phân biệt hoa thường, bỏ qua dấu `-`. MANUAL bắt buộc `note`.
-        Lỗi: `409 ALREADY_CHECKED_IN` (kèm `details.checkedInAt`, `details.checkedInBy`), `422 INVALID_QR`,
+        Lỗi: `409 ALREADY_CHECKED_IN` (kèm `details.checkedInAt`, `details.checkedInBy`),
+        `403 SELF_CHECKIN_NOT_ALLOWED` (đăng ký của chính Organizer đang quét), `422 INVALID_QR`,
         `422 NOT_ELIGIBLE_FOR_CHECKIN`, `422 CHECKIN_WINDOW_CLOSED`.
       parameters:
         - $ref: '#/components/parameters/EventId'
@@ -926,8 +941,9 @@ paths:
     delete:
       tags: [Check-in]
       operationId: undoCheckIn
+      x-role-policy: Chỉ ORGANIZER thuộc đơn vị của event, trừ đăng ký của chính mình; vai trò ADMIN không cho quyền check-in.
       summary: C3 — Hoàn tác check-in nhầm (Organizer, ghi activity log)
-      description: Đưa các cột checked_in_* của đăng ký về null. Đăng ký chưa check-in → 404.
+      description: Đưa các cột checked_in_* của đăng ký về null. Đăng ký chưa check-in → 404. Đăng ký của chính người gọi → 403 SELF_CHECKIN_NOT_ALLOWED.
       parameters:
         - $ref: '#/components/parameters/RegistrationId'
       responses:
@@ -1130,7 +1146,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     Forbidden:
-      description: FORBIDDEN — sai role cho thao tác; tài nguyên ngoài đơn vị/phạm vi trả 404 NOT_FOUND
+      description: FORBIDDEN, SELF_APPROVAL_NOT_ALLOWED hoặc SELF_CHECKIN_NOT_ALLOWED — thiếu vai trò cho thao tác; tài nguyên ngoài đơn vị/phạm vi trả 404 NOT_FOUND
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1168,13 +1184,14 @@ components:
     # ---------- enums ----------
     UserRole:
       type: string
+      description: Vai trò suy ra, không lưu trong DB (STUDENT ⇔ có MSSV; ORGANIZER ⇔ được gán đơn vị; ADMIN ⇔ isAdmin)
       enum: [STUDENT, ORGANIZER, ADMIN]
     UnitType:
       type: string
       enum: [FACULTY, CLUB, DEPARTMENT]
     MembershipRole:
       type: string
-      enum: [ORGANIZER, APPROVER]
+      enum: [ORGANIZER]
     EventStatus:
       type: string
       enum: [DRAFT, PENDING_APPROVAL, REJECTED, PUBLISHED, CANCELLED, COMPLETED]
@@ -1200,6 +1217,7 @@ components:
         - UNAUTHENTICATED
         - FORBIDDEN
         - SELF_APPROVAL_NOT_ALLOWED
+        - SELF_CHECKIN_NOT_ALLOWED
         - NOT_FOUND
         - ALREADY_REGISTERED
         - EVENT_FULL
@@ -1274,13 +1292,24 @@ components:
         email: { type: string, format: email }
     User:
       type: object
-      required: [id, email, fullName, role, isActive, units]
+      required: [id, email, fullName, studentCode, isAdmin, roles, isActive, units]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         fullName: { type: string }
-        studentCode: { type: [string, 'null'] }
-        role: { $ref: '#/components/schemas/UserRole' }
+        studentCode:
+          type: [string, 'null']
+          description: MSSV từ danh sách import; có giá trị ⇔ user có vai trò STUDENT
+        isAdmin:
+          type: boolean
+          description: Chỉ đội dev cấp, không có API thay đổi
+        roles:
+          type: array
+          readOnly: true
+          uniqueItems: true
+          description: Vai trò suy ra từ studentCode, isAdmin và units; có thể rỗng hoặc nhiều giá trị
+          items: { $ref: '#/components/schemas/UserRole' }
+          example: [STUDENT, ORGANIZER]
         isActive: { type: boolean }
         units:
           type: array
@@ -1405,7 +1434,7 @@ components:
         cancelDeadline:
           type: string
           format: date-time
-          description: startAt - 24h; sau mốc này sinh viên không tự hủy được
+          description: startAt - 24h; sau mốc này chỉ đăng ký được cấp ngoại lệ Q19 mới có thể tự hủy, tới trước startAt
         status: { $ref: '#/components/schemas/EventStatus' }
         cancelReason: { type: [string, 'null'] }
         rejectReason:
@@ -1463,10 +1492,14 @@ components:
         checkinCode:
           type: [string, 'null']
           pattern: '^[0-9A-Z]{4}-[0-9A-Z]{4}$'
-          description: Mã nhập tay, chỉ hiển thị khi REGISTERED
+          description: Mã nhập tay 8 ký tự lưu ở DB không dấu gạch; hiển thị XXXX-XXXX, chỉ khi REGISTERED
           example: K7Q2-M9XD
         promotedAt: { type: [string, 'null'], format: date-time }
         cancelledAt: { type: [string, 'null'], format: date-time }
+        cancellationExceptionUntil:
+          type: [string, 'null']
+          format: date-time
+          description: Đến mốc này có thể tự hủy theo ngoại lệ Q13–Q19, chỉ cho REGISTERED tồn tại trước thay đổi quan trọng trong 24h cuối
         cancelledBy:
           oneOf:
             - $ref: '#/components/schemas/CancelActor'
@@ -1510,6 +1543,10 @@ components:
         createdAt: { type: string, format: date-time }
         promotedAt: { type: [string, 'null'], format: date-time }
         cancelledAt: { type: [string, 'null'], format: date-time }
+        cancellationExceptionUntil:
+          type: [string, 'null']
+          format: date-time
+          description: Đến mốc này có thể tự hủy theo ngoại lệ Q13–Q19, chỉ cho REGISTERED tồn tại trước thay đổi quan trọng trong 24h cuối
         checkedInAt: { type: [string, 'null'], format: date-time }
 
     # ---------- check-in ----------
