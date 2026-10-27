@@ -1,5 +1,7 @@
 SHELL := /bin/bash
 export GOTOOLCHAIN ?= auto
+SQLC ?= $(shell go env GOPATH)/bin/sqlc
+COMPOSE ?= podman compose
 -include .env
 export
 
@@ -21,15 +23,16 @@ lint:
 fmt:
 	gofmt -w cmd internal
 db-up:
-	docker compose up -d --wait postgres
+	$(COMPOSE) up -d --wait postgres
 db-down:
-	docker compose down
+	$(COMPOSE) down
 migrate-up:
 	migrate -path db/migrations -database "$(DATABASE_URL)" up
 migrate-down:
 	migrate -path db/migrations -database "$(DATABASE_URL)" down 1
 sqlc:
-	sqlc generate
+	$(SQLC) generate
 seed:
 	@test -n "$(DATABASE_URL)" || (echo 'DATABASE_URL is required'; exit 1)
-	psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -f db/seed/seed.sql
+	@test -n "$(ADMIN_EMAIL)" || (echo 'ADMIN_EMAIL is required (bootstrap school email)'; exit 1)
+	psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -v admin_email="$(ADMIN_EMAIL)" -f db/seed/seed.sql
