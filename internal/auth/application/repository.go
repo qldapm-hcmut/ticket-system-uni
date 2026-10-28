@@ -9,6 +9,7 @@ import (
 // Google identities must be verified before invoking identity writes.
 // Session methods accept only hashes, never raw refresh tokens.
 type Repository interface {
+	FindUserByID(context.Context, string) (User, error)
 	FindUserBySub(context.Context, string) (User, error)
 	FindUserByEmail(context.Context, string) (User, error)
 	CreateUser(context.Context, string, string, string) (User, error)

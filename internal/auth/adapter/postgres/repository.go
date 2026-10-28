@@ -47,6 +47,14 @@ func uuid(value string) (pgtype.UUID, error) {
 	return id, nil
 }
 
+func (r *repository) FindUserByID(ctx context.Context, id string) (application.User, error) {
+	uid, err := uuid(id)
+	if err != nil {
+		return application.User{}, err
+	}
+	return user(r.queries.GetUserByID(ctx, uid))
+}
+
 func (r *repository) FindUserBySub(ctx context.Context, sub string) (application.User, error) {
 	return user(r.queries.GetUserByGoogleSub(ctx, pgtype.Text{String: sub, Valid: true}))
 }
