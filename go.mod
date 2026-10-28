@@ -3,6 +3,7 @@ module github.com/qldapm-hcmut/ticket-system-uni
 go 1.27.0
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/labstack/echo/v4 v4.16.2
 	go.uber.org/fx v1.24.0
