@@ -27,4 +27,6 @@ Contract là `docs/db-schema-and-api-contract.md`. Module được nhắc trong 
 - Quy tắc triển khai và kiểm tra: `docs/development.md`.
 - `internal/db/` là code sinh tự động: sửa SQL rồi `make sqlc`, không sửa tay.
 
+README chỉ phục vụ quick start cho developer và high-level design; không ghi tiến độ, kết quả test từng đợt hoặc sao chép business rules vào đó. Không sửa README theo từng feature trừ khi cách setup hoặc high-level design thực sự thay đổi. Khi đổi nghiệp vụ/contract, cập nhật nguồn chuẩn tương ứng; tiến độ và kết quả kiểm chứng ghi trong issue, PR, commit hoặc chat.
+
 Chỉ cập nhật tài liệu liên quan thay vì sao chép quy tắc sang index này. Khi hoàn tất: `make lint`, `make test`; thêm `make sqlc` nếu đổi SQL và integration test nếu đổi DB/nghiệp vụ theo hướng dẫn phát triển.

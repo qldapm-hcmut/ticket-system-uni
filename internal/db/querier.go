@@ -11,6 +11,8 @@ import (
 )
 
 type Querier interface {
+	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
+	CreateAuthSession(ctx context.Context, arg CreateAuthSessionParams) (AuthSession, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByGoogleSub(ctx context.Context, googleSub pgtype.Text) (User, error)
@@ -18,6 +20,7 @@ type Querier interface {
 	GetUserRoles(ctx context.Context, id pgtype.UUID) (GetUserRolesRow, error)
 	LinkGoogleIdentity(ctx context.Context, arg LinkGoogleIdentityParams) (User, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
+	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
 }
 
 var _ Querier = (*Queries)(nil)
