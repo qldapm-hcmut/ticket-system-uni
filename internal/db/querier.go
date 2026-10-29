@@ -13,14 +13,20 @@ import (
 type Querier interface {
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CreateAuthSession(ctx context.Context, arg CreateAuthSessionParams) (AuthSession, error)
+	CreateDraftEvent(ctx context.Context, arg CreateDraftEventParams) (Event, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
+	GetEvent(ctx context.Context, id pgtype.UUID) (Event, error)
+	GetEventForUpdate(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByGoogleSub(ctx context.Context, googleSub pgtype.Text) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserRoles(ctx context.Context, id pgtype.UUID) (GetUserRolesRow, error)
+	IsUnitOrganizer(ctx context.Context, arg IsUnitOrganizerParams) (bool, error)
 	LinkGoogleIdentity(ctx context.Context, arg LinkGoogleIdentityParams) (User, error)
+	ListActiveUnits(ctx context.Context, kind string) ([]Unit, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
 	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
+	UpdateDraftEvent(ctx context.Context, arg UpdateDraftEventParams) (Event, error)
 }
 
 var _ Querier = (*Queries)(nil)
