@@ -57,6 +57,7 @@ func TestPersistence(t *testing.T) {
 	}
 	uow := NewUnitOfWork(pool)
 	t.Run("login use cases", func(t *testing.T) { testLoginUseCases(t, pool, uow) })
+	t.Run("HTTP flow", func(t *testing.T) { testHTTPFlow(t, pool, uow) })
 	now := time.Now().UTC()
 	var owner application.User
 	err = uow.Do(ctx, func(ctx context.Context, r application.Repository) error {

@@ -20,7 +20,7 @@ func main() {
 			postgres.NewPool,
 			func(pool *pgxpool.Pool) *echo.Echo { return httpserver.New(pool) },
 		),
-		fx.Invoke(httpserver.RegisterLifecycle),
+		fx.Invoke(registerAuth, httpserver.RegisterLifecycle),
 		fx.StartTimeout(15*time.Second),
 		fx.StopTimeout(10*time.Second),
 	).Run()
