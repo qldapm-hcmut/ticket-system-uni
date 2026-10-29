@@ -13,6 +13,9 @@ import (
 	authpg "github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/postgres"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/token"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/application"
+	eventhttp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/http"
+	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
+	eventapp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/config"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/shared/kernel"
 	"go.uber.org/fx"
@@ -43,7 +46,9 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 			return err
 		}
 		service := application.NewService(authpg.NewUnitOfWork(pool), verifier, tokens, kernel.SystemClock{})
-		authhttp.New(service, tokens, authpg.NewProfileReader(pool)).Register(e)
+		authHandler := authhttp.New(service, tokens, authpg.NewProfileReader(pool))
+		authHandler.Register(e)
+		eventhttp.New(eventapp.New(eventpg.New(pool), kernel.SystemClock{}), eventpg.NewReader(pool, kernel.SystemClock{})).Register(e, authHandler.Authenticate)
 		return nil
 	}, OnStop: func(context.Context) error { cancel(); return nil }})
 	return nil

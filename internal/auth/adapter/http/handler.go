@@ -32,8 +32,8 @@ func (h *Handler) Register(e *echo.Echo) {
 	g := e.Group("/api/v1")
 	g.POST("/auth/google", h.login)
 	g.POST("/auth/refresh", h.refresh)
-	g.POST("/auth/logout", h.logout, h.authenticate)
-	g.GET("/me", h.me, h.authenticate)
+	g.POST("/auth/logout", h.logout, h.Authenticate)
+	g.GET("/me", h.me, h.Authenticate)
 }
 func fail(c echo.Context, status int, code, message string) error {
 	return c.JSON(status, map[string]any{"error": map[string]string{"code": code, "message": message}})
@@ -58,7 +58,9 @@ func decode(c echo.Context, dst any) error {
 	}
 	return nil
 }
-func (h *Handler) authenticate(next echo.HandlerFunc) echo.HandlerFunc {
+
+// Authenticate verifies the bearer token and loads the current active profile.
+func (h *Handler) Authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		parts := strings.Fields(c.Request().Header.Get("Authorization"))
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 8192 {
