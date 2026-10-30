@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/qldapm-hcmut/ticket-system-uni/internal/db"
 	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
 	eventapp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/domain"
@@ -163,6 +164,54 @@ func TestRegistrationPersistence(t *testing.T) {
 		}
 		return out
 	}
+	t.Run("checkin SQL concurrent update and audited undo", func(t *testing.T) {
+		e := event(1, 2)
+		reg := seed(e, 1)[0]
+		q := db.New(pool)
+		eid, _ := uuid(e)
+		rid, _ := uuid(reg.ID)
+		staff, _ := uuid(owner)
+		code := strings.ToLower(reg.CheckinCode[:4] + "-" + reg.CheckinCode[4:])
+		found, err := q.GetRegistrationByCheckinCode(ctx, db.GetRegistrationByCheckinCodeParams{EventID: eid, Code: code})
+		if err != nil || found.ID != rid {
+			t.Fatalf("code lookup: %v", err)
+		}
+		task := func() error {
+			_, err := q.CheckInRegistration(ctx, db.CheckInRegistrationParams{RegistrationID: rid, EventID: eid, StaffID: staff, Method: db.CheckinMethodCODE})
+			return err
+		}
+		success, duplicate := 0, 0
+		for _, err := range concurrent(task, task) {
+			if err == nil {
+				success++
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				duplicate++
+			} else {
+				t.Fatal(err)
+			}
+		}
+		if success != 1 || duplicate != 1 {
+			t.Fatalf("success=%d duplicate=%d", success, duplicate)
+		}
+		undone, err := q.UndoRegistrationCheckin(ctx, db.UndoRegistrationCheckinParams{RegistrationID: rid, ActorID: staff})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if undone.CheckedInAt.Valid || undone.CheckedInBy.Valid || undone.CheckinMethod.Valid || undone.CheckinNote.Valid {
+			t.Fatal("checkin fields not cleared")
+		}
+		if _, err := q.UndoRegistrationCheckin(ctx, db.UndoRegistrationCheckinParams{RegistrationID: rid, ActorID: staff}); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("duplicate undo: %v", err)
+		}
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs WHERE event_id=$1 AND action='UNDO_CHECKIN' AND metadata->>'checkedInAt' IS NOT NULL`, e).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("audit count=%d", count)
+		}
+		counters(e, 1, 0)
+	})
 	t.Run("significant change failures roll back all writes", func(t *testing.T) {
 		for _, target := range []string{"notifications", "activity_logs"} {
 			t.Run(target, func(t *testing.T) {
