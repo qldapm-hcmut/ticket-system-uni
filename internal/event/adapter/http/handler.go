@@ -43,6 +43,8 @@ func failure(c echo.Context, err error) error {
 		status, code = 404, "NOT_FOUND"
 	case errors.Is(err, domain.ErrForbidden):
 		status, code = 403, "FORBIDDEN"
+	case errors.Is(err, domain.ErrCapacity):
+		status, code = 409, "CAPACITY_BELOW_REGISTERED"
 	case errors.Is(err, domain.ErrVersion):
 		status, code = 409, "VERSION_CONFLICT"
 	case errors.Is(err, domain.ErrState):
@@ -134,7 +136,7 @@ func (h *Handler) patch(c echo.Context) error {
 			return failure(c, domain.ErrValidation)
 		}
 	}
-	_, err = h.service.Patch(c.Request().Context(), actor(c), c.Param("id"), int32(version), func(current domain.Fields) (domain.Fields, error) {
+	updated, err := h.service.Patch(c.Request().Context(), actor(c), c.Param("id"), int32(version), func(current domain.Fields) (domain.Fields, error) {
 		raw, _ := json.Marshal(current)
 		var merged map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &merged)
@@ -154,7 +156,7 @@ func (h *Handler) patch(c echo.Context) error {
 	if err != nil {
 		return failure(c, err)
 	}
-	return c.JSON(200, map[string]any{"data": result, "meta": map[string]any{"significantChange": false, "notifiedCount": 0, "promotedCount": 0}})
+	return c.JSON(200, map[string]any{"data": result, "meta": map[string]any{"significantChange": false, "notifiedCount": 0, "promotedCount": updated.PromotedCount}})
 }
 func (h *Handler) managed(c echo.Context) error {
 	a := actor(c)

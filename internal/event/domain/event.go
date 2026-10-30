@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	ErrCapacity   = errors.New("capacity below registered count")
 	ErrValidation = errors.New("invalid event fields")
 	ErrNotFound   = errors.New("event not found")
 	ErrForbidden  = errors.New("organizer role required")
@@ -43,4 +44,5 @@ type Event struct {
 	Version         int32
 	RegisteredCount int32
 	WaitlistCount   int32
+	PromotedCount   int32
 }

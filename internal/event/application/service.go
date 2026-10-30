@@ -2,8 +2,10 @@ package application
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/domain"
+	shared "github.com/qldapm-hcmut/ticket-system-uni/internal/shared/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/shared/kernel"
 )
 
@@ -12,14 +14,14 @@ type Actor struct {
 	IsAdmin     bool
 	IsOrganizer bool
 }
-type Repository interface {
+type EventRepository interface {
 	IsOrganizer(context.Context, string, string) (bool, error)
 	Get(context.Context, string, bool) (domain.Event, error)
 	Create(context.Context, string, string, domain.Fields) (domain.Event, error)
 	Update(context.Context, domain.Event) (domain.Event, error)
 }
 type UnitOfWork interface {
-	Do(context.Context, func(Repository) error) error
+	shared.UnitOfWork[EventRepository]
 }
 type Service struct {
 	uow   UnitOfWork
@@ -35,7 +37,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, unit string, f domain
 		return domain.Event{}, err
 	}
 	var result domain.Event
-	err := s.uow.Do(ctx, func(r Repository) error {
+	err := s.uow.Do(ctx, func(ctx context.Context, r EventRepository) error {
 		allowed, err := r.IsOrganizer(ctx, actor.ID, unit)
 		if err != nil {
 			return err
@@ -53,7 +55,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, unit string, f domain
 }
 func (s *Service) Get(ctx context.Context, actor Actor, id string) (domain.Event, error) {
 	var result domain.Event
-	err := s.uow.Do(ctx, func(r Repository) error {
+	err := s.uow.Do(ctx, func(ctx context.Context, r EventRepository) error {
 		e, err := r.Get(ctx, id, false)
 		if err != nil {
 			return err
@@ -79,7 +81,7 @@ func (s *Service) Patch(ctx context.Context, actor Actor, id string, version int
 		return domain.Event{}, domain.ErrForbidden
 	}
 	var result domain.Event
-	err := s.uow.Do(ctx, func(r Repository) error {
+	err := s.uow.Do(ctx, func(ctx context.Context, r EventRepository) error {
 		e, err := r.Get(ctx, id, true)
 		if err != nil {
 			return err
@@ -94,12 +96,28 @@ func (s *Service) Patch(ctx context.Context, actor Actor, id string, version int
 		if e.Version != version {
 			return domain.ErrVersion
 		}
-		if e.Status != "DRAFT" && e.Status != "REJECTED" {
+		if e.Status != "DRAFT" && e.Status != "REJECTED" && e.Status != "PUBLISHED" {
 			return domain.ErrState
 		}
+		old := e.Fields
 		e.Fields, err = merge(e.Fields)
 		if err != nil {
 			return err
+		}
+		// Published edits beyond capacity are handled separately; do not silently
+		// accept significant changes without their audit/notification workflow.
+		if e.Status == "PUBLISHED" {
+			candidate := e.Fields
+			candidate.Capacity = old.Capacity
+			if !reflect.DeepEqual(old, candidate) {
+				return domain.ErrState
+			}
+		}
+		if e.Capacity < e.RegisteredCount {
+			return domain.ErrCapacity
+		}
+		if e.WaitlistLimit != nil && *e.WaitlistLimit < e.WaitlistCount {
+			return domain.ErrValidation
 		}
 		if err = e.Fields.Validate(s.clock.Now()); err != nil {
 			return err
