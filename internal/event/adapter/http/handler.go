@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -93,11 +94,22 @@ func (h *Handler) create(c echo.Context) error {
 	return c.JSON(201, map[string]any{"data": result})
 }
 func (h *Handler) detail(c echo.Context) error {
-	_, err := h.service.Get(c.Request().Context(), actor(c), c.Param("id"))
+	a := actor(c)
+	result, err := h.reader.Detail(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return failure(c, err)
 	}
-	result, err := h.reader.Detail(c.Request().Context(), c.Param("id"))
+	if fmt.Sprint(result["status"]) == "PUBLISHED" {
+		return c.JSON(200, map[string]any{"data": result})
+	}
+	if !a.IsAdmin && !a.IsOrganizer {
+		return failure(c, domain.ErrNotFound)
+	}
+	_, err = h.service.Get(c.Request().Context(), a, c.Param("id"))
+	if err != nil {
+		return failure(c, err)
+	}
+	result, err = h.reader.Detail(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return failure(c, err)
 	}

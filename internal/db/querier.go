@@ -11,8 +11,10 @@ import (
 )
 
 type Querier interface {
+	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
+	CountPendingEvents(ctx context.Context) (int64, error)
 	CreateAuthSession(ctx context.Context, arg CreateAuthSessionParams) (AuthSession, error)
 	CreateDraftEvent(ctx context.Context, arg CreateDraftEventParams) (Event, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
@@ -28,8 +30,11 @@ type Querier interface {
 	LinkGoogleIdentity(ctx context.Context, arg LinkGoogleIdentityParams) (User, error)
 	ListActiveUnits(ctx context.Context, kind string) ([]Unit, error)
 	ListManagedEvents(ctx context.Context, arg ListManagedEventsParams) ([]Event, error)
+	ListPendingEvents(ctx context.Context, arg ListPendingEventsParams) ([]Event, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
+	RejectEvent(ctx context.Context, arg RejectEventParams) (Event, error)
 	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
+	SubmitEvent(ctx context.Context, arg SubmitEventParams) (Event, error)
 	UpdateDraftEvent(ctx context.Context, arg UpdateDraftEventParams) (Event, error)
 }
 
