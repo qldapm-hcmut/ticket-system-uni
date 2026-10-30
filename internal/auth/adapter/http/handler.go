@@ -19,18 +19,26 @@ type Service interface {
 	Logout(context.Context, string, string) error
 }
 type AccessVerifier interface{ VerifyAccessToken(string) (string, error) }
+type DevLoginService interface {
+	DevLogin(context.Context, string) (application.LoginResult, error)
+}
 type Handler struct {
 	service  Service
+	devLogin DevLoginService
 	tokens   AccessVerifier
 	profiles application.ProfileReader
 }
 
 func New(service Service, tokens AccessVerifier, profiles application.ProfileReader) *Handler {
-	return &Handler{service, tokens, profiles}
+	return &Handler{service: service, tokens: tokens, profiles: profiles}
+}
+func NewWithDevLogin(service Service, dev DevLoginService, tokens AccessVerifier, profiles application.ProfileReader) *Handler {
+	return &Handler{service: service, devLogin: dev, tokens: tokens, profiles: profiles}
 }
 func (h *Handler) Register(e *echo.Echo) {
 	g := e.Group("/api/v1")
 	g.POST("/auth/google", h.login)
+	g.POST("/auth/dev-login", h.devLoginHandler)
 	g.POST("/auth/refresh", h.refresh)
 	g.POST("/auth/logout", h.logout, h.Authenticate)
 	g.GET("/me", h.me, h.Authenticate)
@@ -77,6 +85,29 @@ func (h *Handler) Authenticate(next echo.HandlerFunc) echo.HandlerFunc {
 		c.Set("auth.profile", profile)
 		return next(c)
 	}
+}
+func (h *Handler) devLoginHandler(c echo.Context) error {
+	if h.devLogin == nil {
+		return fail(c, 404, "NOT_FOUND", "Not found.")
+	}
+	var body struct {
+		Email string `json:"email"`
+	}
+	if decode(c, &body) != nil {
+		return fail(c, 400, "VALIDATION_ERROR", "email is required.")
+	}
+	result, err := h.devLogin.DevLogin(c.Request().Context(), body.Email)
+	if err != nil {
+		return respondError(c, err)
+	}
+	profile, err := h.profiles.ReadProfile(c.Request().Context(), result.User.ID)
+	if err != nil {
+		return respondError(c, err)
+	}
+	data := tokenDTO(result.Tokens)
+	data["user"] = profileDTO(profile)
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(200, map[string]any{"data": data})
 }
 func (h *Handler) login(c echo.Context) error {
 	var body struct {

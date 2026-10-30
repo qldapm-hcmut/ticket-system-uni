@@ -8,12 +8,13 @@ import (
 
 // Config contains infrastructure settings. Secrets must never be logged.
 type Config struct {
-	HTTPAddr    string
-	DatabaseURL string
+	HTTPAddr        string
+	DatabaseURL     string
+	DevLoginEnabled bool
 }
 
 func Load() (Config, error) {
-	c := Config{HTTPAddr: os.Getenv("HTTP_ADDR"), DatabaseURL: os.Getenv("DATABASE_URL")}
+	c := Config{HTTPAddr: os.Getenv("HTTP_ADDR"), DatabaseURL: os.Getenv("DATABASE_URL"), DevLoginEnabled: os.Getenv("DEV_LOGIN_ENABLED") == "true"}
 	if c.HTTPAddr == "" {
 		c.HTTPAddr = ":3000"
 	}

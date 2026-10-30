@@ -45,6 +45,33 @@ func (s *Service) issue(ctx context.Context, r Repository, user User, now time.T
 	return Tokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int(accessLifetime / time.Second)}, nil
 }
 
+func (s *Service) DevLogin(ctx context.Context, email string) (LoginResult, error) {
+	var result LoginResult
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return result, ErrUnauthenticated
+	}
+	err := s.uow.Do(ctx, func(ctx context.Context, r Repository) error {
+		user, err := r.FindUserByEmail(ctx, email)
+		if errors.Is(err, ErrNotFound) {
+			user, err = r.CreateUser(ctx, email, "Demo "+email, "dev:"+email)
+		}
+		if err != nil || !user.IsActive {
+			return ErrUnauthenticated
+		}
+		tokens, err := s.issue(ctx, r, user, s.clock.Now())
+		if err != nil {
+			return err
+		}
+		result = LoginResult{Tokens: tokens, User: user}
+		return nil
+	})
+	if err != nil {
+		return LoginResult{}, authError(err)
+	}
+	return result, nil
+}
+
 func (s *Service) Login(ctx context.Context, idToken string) (LoginResult, error) {
 	if strings.TrimSpace(idToken) == "" {
 		return LoginResult{}, ErrUnauthenticated

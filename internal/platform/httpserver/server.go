@@ -16,7 +16,11 @@ func New(db Pinger) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
-	e.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimit("1M"))
+	e.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimit("1M"), middleware.CORSWithConfig(middleware.CORSConfig{
+		AllowOrigins: []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization, "If-Match"},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+	}))
 	e.HTTPErrorHandler = func(err error, c echo.Context) {
 		if c.Response().Committed {
 			return

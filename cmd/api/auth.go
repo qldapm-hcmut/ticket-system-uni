@@ -22,7 +22,7 @@ import (
 )
 
 // Auth setup runs before the HTTP lifecycle hook starts accepting requests.
-func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
+func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool, appConfig config.Config) error {
 	clientID, err := config.LoadGoogleClientID()
 	if err != nil {
 		return err
@@ -47,8 +47,14 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		}
 		service := application.NewService(authpg.NewUnitOfWork(pool), verifier, tokens, kernel.SystemClock{})
 		authHandler := authhttp.New(service, tokens, authpg.NewProfileReader(pool))
+		if appConfig.DevLoginEnabled {
+			authHandler = authhttp.NewWithDevLogin(service, service, tokens, authpg.NewProfileReader(pool))
+		}
 		authHandler.Register(e)
-		eventhttp.New(eventapp.New(eventpg.New(pool), kernel.SystemClock{}), eventpg.NewReader(pool, kernel.SystemClock{})).Register(e, authHandler.Authenticate)
+		eventStore := eventpg.New(pool)
+		eventReader := eventpg.NewReader(pool, kernel.SystemClock{})
+		eventhttp.New(eventapp.New(eventStore, kernel.SystemClock{}), eventReader).Register(e, authHandler.Authenticate)
+		eventhttp.NewApprovalHandler(eventapp.NewApprovalService(eventStore), eventReader).Register(e, authHandler.Authenticate)
 		return nil
 	}, OnStop: func(context.Context) error { cancel(); return nil }})
 	return nil
