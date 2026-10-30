@@ -2,7 +2,7 @@ package application
 
 import (
 	"context"
-	"reflect"
+	"time"
 
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/domain"
 	shared "github.com/qldapm-hcmut/ticket-system-uni/internal/shared/application"
@@ -104,15 +104,12 @@ func (s *Service) Patch(ctx context.Context, actor Actor, id string, version int
 		if err != nil {
 			return err
 		}
-		// Published edits beyond capacity are handled separately; do not silently
-		// accept significant changes without their audit/notification workflow.
-		if e.Status == "PUBLISHED" {
-			candidate := e.Fields
-			candidate.Capacity = old.Capacity
-			if !reflect.DeepEqual(old, candidate) {
-				return domain.ErrState
-			}
+		e.SignificantChange = e.Status == "PUBLISHED" && (!old.StartAt.Equal(e.StartAt) || !old.EndAt.Equal(e.EndAt) || old.Location != e.Location)
+		if e.SignificantChange && !s.clock.Now().Before(old.StartAt.Add(-time.Hour)) {
+			return domain.ErrState
 		}
+		e.GrantCancellationException = e.SignificantChange && !s.clock.Now().Before(old.StartAt.Add(-24*time.Hour))
+		e.ChangedBy = actor.ID
 		if e.Capacity < e.RegisteredCount {
 			return domain.ErrCapacity
 		}

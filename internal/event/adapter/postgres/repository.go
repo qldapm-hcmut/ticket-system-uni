@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -108,6 +109,28 @@ func (r *repository) Update(ctx context.Context, e domain.Event) (domain.Event, 
 	updated, err := event(r.q.UpdateDraftEvent(ctx, db.UpdateDraftEventParams{ID: u, Title: f.Title, Description: text(f.Description), Location: f.Location, StartAt: stamp(f.StartAt), EndAt: stamp(f.EndAt), RegistrationOpensAt: stamp(f.RegistrationOpensAt), RegistrationClosesAt: stamp(f.RegistrationClosesAt), Capacity: f.Capacity, WaitlistLimit: integer(f.WaitlistLimit), Version: e.Version}))
 	if err != nil {
 		return domain.Event{}, err
+	}
+	if e.SignificantChange {
+		granted, err := r.q.UpdateCancellationExceptions(ctx, db.UpdateCancellationExceptionsParams{EventID: u, NewStart: stamp(f.StartAt), GrantException: e.GrantCancellationException})
+		if err != nil {
+			return domain.Event{}, err
+		}
+		updated.NotifiedCount, err = r.q.NotifyEventChanged(ctx, u)
+		if err != nil {
+			return domain.Event{}, err
+		}
+		actor, err := id(e.ChangedBy)
+		if err != nil {
+			return domain.Event{}, err
+		}
+		metadata, err := json.Marshal(map[string]any{"isSignificant": true, "exceptionGrantedCount": granted, "oldStartAt": old.StartAt.Time, "newStartAt": f.StartAt, "oldEndAt": old.EndAt.Time, "newEndAt": f.EndAt, "oldLocation": old.Location, "newLocation": f.Location})
+		if err != nil {
+			return domain.Event{}, err
+		}
+		if err = r.q.AuditEventChange(ctx, db.AuditEventChangeParams{ActorID: actor, EventID: u, Metadata: metadata}); err != nil {
+			return domain.Event{}, err
+		}
+		updated.SignificantChange = true
 	}
 	if old.Status == db.EventStatusPUBLISHED && f.Capacity > old.Capacity {
 		updated.PromotedCount, err = r.q.PromoteWaitlistForCapacity(ctx, db.PromoteWaitlistForCapacityParams{EventID: u, Seats: f.Capacity - old.Capacity})
