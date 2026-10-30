@@ -156,7 +156,7 @@ func (h *Handler) patch(c echo.Context) error {
 	if err != nil {
 		return failure(c, err)
 	}
-	return c.JSON(200, map[string]any{"data": result, "meta": map[string]any{"significantChange": false, "notifiedCount": 0, "promotedCount": updated.PromotedCount}})
+	return c.JSON(200, map[string]any{"data": result, "meta": map[string]any{"significantChange": updated.SignificantChange, "notifiedCount": updated.NotifiedCount, "promotedCount": updated.PromotedCount}})
 }
 func (h *Handler) managed(c echo.Context) error {
 	a := actor(c)

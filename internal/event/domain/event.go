@@ -37,12 +37,16 @@ func (f Fields) Validate(now time.Time) error {
 
 type Event struct {
 	Fields
-	ID              string
-	UnitID          string
-	CreatedBy       string
-	Status          string
-	Version         int32
-	RegisteredCount int32
-	WaitlistCount   int32
-	PromotedCount   int32
+	ID                         string
+	UnitID                     string
+	CreatedBy                  string
+	Status                     string
+	Version                    int32
+	RegisteredCount            int32
+	WaitlistCount              int32
+	GrantCancellationException bool
+	SignificantChange          bool
+	NotifiedCount              int64
+	ChangedBy                  string
+	PromotedCount              int32
 }
