@@ -4,9 +4,20 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/labstack/echo/v4"
+	authhttp "github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/http"
+	authpg "github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/postgres"
+	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/token"
+	eventhttp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/http"
+	reghttp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/http"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -152,6 +163,266 @@ func TestRegistrationPersistence(t *testing.T) {
 		}
 		return out
 	}
+	t.Run("significant change failures roll back all writes", func(t *testing.T) {
+		for _, target := range []string{"notifications", "activity_logs"} {
+			t.Run(target, func(t *testing.T) {
+				e := event(1, 5)
+				regs := seed(e, 2)
+				if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '12 hours',end_at=now()+interval '13 hours',registration_closes_at=now()+interval '1 hour' WHERE id=$1`, e); err != nil {
+					t.Fatal(err)
+				}
+				var before string
+				snapshot := func() string {
+					t.Helper()
+					var out string
+					if err := pool.QueryRow(ctx, `SELECT jsonb_build_object('event',to_jsonb(e),'registrations',(SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM registrations r WHERE r.event_id=e.id),'notifications',(SELECT jsonb_agg(to_jsonb(n) ORDER BY n.id) FROM notifications n WHERE n.event_id=e.id),'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM activity_logs a WHERE a.event_id=e.id))::text FROM events e WHERE e.id=$1`, e).Scan(&out); err != nil {
+						t.Fatal(err)
+					}
+					return out
+				}
+				before = snapshot()
+				condition := ""
+				if target == "notifications" {
+					condition = "IF NEW.type <> 'EVENT_CHANGED' THEN RETURN NEW; END IF;"
+				}
+				if _, err := pool.Exec(ctx, `CREATE FUNCTION reject_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN `+condition+` RAISE EXCEPTION 'injected significant change failure'; END $$; CREATE TRIGGER reject_change BEFORE INSERT ON `+target+` FOR EACH ROW EXECUTE FUNCTION reject_change()`); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if _, err := pool.Exec(ctx, `DROP TRIGGER reject_change ON `+target+`; DROP FUNCTION reject_change()`); err != nil {
+						t.Error(err)
+					}
+				}()
+				_, err := es.Patch(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, e, 1, func(f domain.Fields) (domain.Fields, error) {
+					f.Location = "Rollback campus"
+					f.Capacity = 2
+					return f, nil
+				})
+				if err == nil {
+					t.Fatal("expected injected failure")
+				}
+				if after := snapshot(); after != before {
+					t.Fatalf("partial changes persisted\nbefore=%s\nafter=%s", before, after)
+				}
+				counters(e, 1, 1)
+				if _, err := service.Cancel(ctx, regs[0].StudentID, regs[0].ID); !errors.Is(err, a.ErrCancelDeadline) {
+					t.Fatalf("exception leaked: %v", err)
+				}
+			})
+		}
+	})
+	t.Run("time boundaries with fixed application clock", func(t *testing.T) {
+		for _, tc := range []struct {
+			name           string
+			until          time.Duration
+			blocked, grant bool
+		}{
+			{"exact 60 minutes", time.Hour, true, false}, {"just before cutoff", time.Hour + time.Microsecond, false, true}, {"exact 24 hours", 24 * time.Hour, false, true}, {"before 24 hour window", 24*time.Hour + time.Microsecond, false, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				e := event(1, 5)
+				regs := seed(e, 2)
+				now := time.Now().UTC().Truncate(time.Microsecond)
+				start := now.Add(tc.until)
+				if _, err := pool.Exec(ctx, `UPDATE events SET start_at=$2,end_at=$2::timestamptz+interval '1 hour',registration_closes_at=$3 WHERE id=$1`, e, start, now.Add(30*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				fixedService := eventapp.New(eventpg.New(pool), fixedEventClock{now})
+				result, err := fixedService.Patch(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, e, 1, func(f domain.Fields) (domain.Fields, error) { f.Location = "Boundary campus"; return f, nil })
+				if tc.blocked {
+					if !errors.Is(err, domain.ErrState) {
+						t.Fatalf("expected cutoff: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.NotifiedCount != 2 {
+					t.Fatalf("notified=%d", result.NotifiedCount)
+				}
+				for i, r := range regs {
+					var exception *time.Time
+					if err := pool.QueryRow(ctx, `SELECT cancellation_exception_until FROM registrations WHERE id=$1`, r.ID).Scan(&exception); err != nil {
+						t.Fatal(err)
+					}
+					want := tc.grant && i == 0
+					if (exception != nil) != want {
+						t.Fatalf("student %d exception=%v want=%v", i, exception, want)
+					}
+				}
+			})
+		}
+	})
+	t.Run("repeated edits preserve only existing exceptions", func(t *testing.T) {
+		e := event(3, 5)
+		regs := seed(e, 1)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=$2,end_at=$2::timestamptz+interval '1 hour',registration_closes_at=$3 WHERE id=$1`, e, now.Add(12*time.Hour), now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		fixedService := eventapp.New(eventpg.New(pool), fixedEventClock{now})
+		edit := func(version int32, hours int) error {
+			_, err := fixedService.Patch(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, e, version, func(f domain.Fields) (domain.Fields, error) {
+				f.StartAt = now.Add(time.Duration(hours) * time.Hour)
+				f.EndAt = f.StartAt.Add(time.Hour)
+				return f, nil
+			})
+			return err
+		}
+		if err := edit(1, 48); err != nil {
+			t.Fatal(err)
+		}
+		late, err := service.Register(ctx, user(), e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := edit(2, 72); err != nil {
+			t.Fatal(err)
+		}
+		var exception *time.Time
+		if err := pool.QueryRow(ctx, `SELECT cancellation_exception_until FROM registrations WHERE id=$1`, regs[0].ID).Scan(&exception); err != nil {
+			t.Fatal(err)
+		}
+		if exception == nil || !exception.Equal(now.Add(72*time.Hour)) {
+			t.Fatalf("exception not moved: %v", exception)
+		}
+		if err := pool.QueryRow(ctx, `SELECT cancellation_exception_until FROM registrations WHERE id=$1`, late.ID).Scan(&exception); err != nil {
+			t.Fatal(err)
+		}
+		if exception != nil {
+			t.Fatalf("late registrant inherited exception: %v", exception)
+		}
+	})
+	t.Run("real HTTP published changes and cancellation", func(t *testing.T) {
+		tokens, err := token.New("integration-only-signing-key-at-least-32-bytes", kernel.SystemClock{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		authHandler := authhttp.New(nil, tokens, authpg.NewProfileReader(pool))
+		router := echo.New()
+		eventhttp.New(es, eventpg.NewReader(pool, kernel.SystemClock{})).Register(router, authHandler.Authenticate)
+		reghttp.New(service).Register(router, authHandler.Authenticate)
+		server := httptest.NewServer(router)
+		defer server.Close()
+		client := &http.Client{Timeout: 10 * time.Second}
+		request := func(method, path, body, actor string, version int, want int) map[string]any {
+			t.Helper()
+			req, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if actor != "" {
+				access, err := tokens.AccessToken(actor, time.Now().Add(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+access)
+			}
+			if version > 0 {
+				req.Header.Set("If-Match", fmt.Sprint(version))
+			}
+			response, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			raw, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%s %s -> %d %s", method, path, response.StatusCode, strings.TrimSpace(string(raw)))
+			if response.StatusCode != want {
+				t.Fatalf("want HTTP %d", want)
+			}
+			var out map[string]any
+			if err := json.Unmarshal(raw, &out); err != nil {
+				t.Fatal(err)
+			}
+			return out
+		}
+		e := event(1, 5)
+		s1, s2 := user(), user()
+		if _, err := pool.Exec(ctx, `UPDATE users SET student_code=CASE WHEN id=$1 THEN 'HTTP001' ELSE 'HTTP002' END WHERE id IN ($1,$2)`, s1, s2); err != nil {
+			t.Fatal(err)
+		}
+		path := "/api/v1/events/" + e
+		request("PATCH", path, `{"capacity":2}`, "", 1, 401)
+		request("PATCH", path, `{"capacity":2}`, s1, 1, 403)
+		first := request("POST", path+"/registrations", `{}`, s1, 0, 201)["data"].(map[string]any)
+		second := request("POST", path+"/registrations", `{}`, s2, 0, 201)["data"].(map[string]any)
+		if second["status"] != "WAITLISTED" {
+			t.Fatal("expected waitlist")
+		}
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '12 hours',end_at=now()+interval '13 hours',registration_closes_at=now()+interval '1 hour' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		request("PATCH", path, `{"location":"Updated campus"}`, owner, 0, 428)
+		out := request("PATCH", path, `{"location":"Updated campus","capacity":2}`, owner, 1, 200)
+		meta := out["meta"].(map[string]any)
+		if meta["significantChange"] != true || meta["notifiedCount"] != float64(2) || meta["promotedCount"] != float64(1) {
+			t.Fatalf("unexpected meta %+v", meta)
+		}
+		request("PATCH", path, `{"capacity":3}`, owner, 1, 409)
+		deadline := request("POST", "/api/v1/registrations/"+second["id"].(string)+"/cancel", `{}`, s2, 0, 422)
+		if deadline["error"].(map[string]any)["code"] != "CANCEL_DEADLINE_PASSED" {
+			t.Fatal("wrong deadline code")
+		}
+		request("POST", "/api/v1/registrations/"+first["id"].(string)+"/cancel", `{}`, s1, 0, 200)
+		counters(e, 1, 0)
+		request("GET", path, "", owner, 0, 200)
+	})
+	t.Run("published significant changes and cancellation exceptions", func(t *testing.T) {
+		e := event(1, 5)
+		regs := seed(e, 2)
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '12 hours',end_at=now()+interval '13 hours',registration_closes_at=now()+interval '1 hour' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		result, err := es.Patch(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, e, 1, func(f domain.Fields) (domain.Fields, error) { f.Location = "New campus"; f.Capacity = 2; return f, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.SignificantChange || result.NotifiedCount != 2 || result.PromotedCount != 1 {
+			t.Fatalf("unexpected result: %+v", result)
+		}
+		var exception *time.Time
+		if err := pool.QueryRow(ctx, `SELECT cancellation_exception_until FROM registrations WHERE id=$1`, regs[0].ID).Scan(&exception); err != nil {
+			t.Fatal(err)
+		}
+		if exception == nil {
+			t.Fatal("existing registered user missing exception")
+		}
+		if err := pool.QueryRow(ctx, `SELECT cancellation_exception_until FROM registrations WHERE id=$1`, regs[1].ID).Scan(&exception); err != nil {
+			t.Fatal(err)
+		}
+		if exception != nil {
+			t.Fatal("promoted user received exception")
+		}
+		if _, err := service.Cancel(ctx, regs[1].StudentID, regs[1].ID); !errors.Is(err, a.ErrCancelDeadline) {
+			t.Fatalf("unexpected promoted cancellation: %v", err)
+		}
+		if _, err := service.Cancel(ctx, regs[0].StudentID, regs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		var logs int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs WHERE event_id=$1 AND action='UPDATE_EVENT' AND metadata->>'isSignificant'='true'`, e).Scan(&logs); err != nil {
+			t.Fatal(err)
+		}
+		if logs != 1 {
+			t.Fatalf("audit count %d", logs)
+		}
+	})
+	t.Run("published significant change cutoff", func(t *testing.T) {
+		e := event(1, 1)
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '30 minutes',end_at=now()+interval '2 hours',registration_closes_at=now()+interval '10 minutes' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		_, err := es.Patch(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, e, 1, func(f domain.Fields) (domain.Fields, error) { f.Location = "Blocked"; return f, nil })
+		if !errors.Is(err, domain.ErrState) {
+			t.Fatalf("expected cutoff rejection: %v", err)
+		}
+	})
 	t.Run("capacity exceeds queue and lower boundary", func(t *testing.T) {
 		e := event(1, 5)
 		seed(e, 3)
@@ -454,3 +725,7 @@ func TestRegistrationPersistence(t *testing.T) {
 		counters(e, 1, 0)
 	})
 }
+
+type fixedEventClock struct{ value time.Time }
+
+func (c fixedEventClock) Now() time.Time { return c.value }
