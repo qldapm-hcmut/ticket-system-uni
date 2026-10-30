@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
+	AuditEventChange(ctx context.Context, arg AuditEventChangeParams) error
 	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
@@ -44,6 +45,7 @@ type Querier interface {
 	ListMyRegistrations(ctx context.Context, arg ListMyRegistrationsParams) ([]Registration, error)
 	ListPendingEvents(ctx context.Context, arg ListPendingEventsParams) ([]Event, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
+	NotifyEventChanged(ctx context.Context, eventID pgtype.UUID) (int64, error)
 	NotifyRegistration(ctx context.Context, arg NotifyRegistrationParams) error
 	PromoteRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
 	PromoteWaitlistForCapacity(ctx context.Context, arg PromoteWaitlistForCapacityParams) (int32, error)
@@ -51,6 +53,7 @@ type Querier interface {
 	RejectEvent(ctx context.Context, arg RejectEventParams) (Event, error)
 	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
 	SubmitEvent(ctx context.Context, arg SubmitEventParams) (Event, error)
+	UpdateCancellationExceptions(ctx context.Context, arg UpdateCancellationExceptionsParams) (int64, error)
 	UpdateDraftEvent(ctx context.Context, arg UpdateDraftEventParams) (Event, error)
 }
 
