@@ -20,8 +20,8 @@ type Store struct {
 }
 
 func New(pool *pgxpool.Pool) *Store { return &Store{platform.NewTransactionRunner(pool), db.New(pool)} }
-func (s *Store) Do(ctx context.Context, fn func(application.Repository) error) error {
-	return s.runner.Do(ctx, func(ctx context.Context, tx pgx.Tx) error { return fn(&repository{s.q.WithTx(tx)}) })
+func (s *Store) Do(ctx context.Context, fn func(context.Context, application.EventRepository) error) error {
+	return s.runner.Do(ctx, func(ctx context.Context, tx pgx.Tx) error { return fn(ctx, &repository{s.q.WithTx(tx)}) })
 }
 
 type repository struct{ q *db.Queries }
@@ -101,5 +101,21 @@ func (r *repository) Update(ctx context.Context, e domain.Event) (domain.Event, 
 		return domain.Event{}, err
 	}
 	f := e.Fields
-	return event(r.q.UpdateDraftEvent(ctx, db.UpdateDraftEventParams{ID: u, Title: f.Title, Description: text(f.Description), Location: f.Location, StartAt: stamp(f.StartAt), EndAt: stamp(f.EndAt), RegistrationOpensAt: stamp(f.RegistrationOpensAt), RegistrationClosesAt: stamp(f.RegistrationClosesAt), Capacity: f.Capacity, WaitlistLimit: integer(f.WaitlistLimit), Version: e.Version}))
+	old, err := r.q.GetEventForUpdate(ctx, u)
+	if err != nil {
+		return event(db.Event{}, err)
+	}
+	updated, err := event(r.q.UpdateDraftEvent(ctx, db.UpdateDraftEventParams{ID: u, Title: f.Title, Description: text(f.Description), Location: f.Location, StartAt: stamp(f.StartAt), EndAt: stamp(f.EndAt), RegistrationOpensAt: stamp(f.RegistrationOpensAt), RegistrationClosesAt: stamp(f.RegistrationClosesAt), Capacity: f.Capacity, WaitlistLimit: integer(f.WaitlistLimit), Version: e.Version}))
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if old.Status == db.EventStatusPUBLISHED && f.Capacity > old.Capacity {
+		updated.PromotedCount, err = r.q.PromoteWaitlistForCapacity(ctx, db.PromoteWaitlistForCapacityParams{EventID: u, Seats: f.Capacity - old.Capacity})
+		if err != nil {
+			return domain.Event{}, err
+		}
+		updated.RegisteredCount += updated.PromotedCount
+		updated.WaitlistCount -= updated.PromotedCount
+	}
+	return updated, nil
 }

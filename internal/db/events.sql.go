@@ -195,7 +195,7 @@ func (q *Queries) ListActiveUnits(ctx context.Context, kind string) ([]Unit, err
 
 const updateDraftEvent = `-- name: UpdateDraftEvent :one
 UPDATE events SET title=$2,description=$3,location=$4,start_at=$5,end_at=$6,registration_opens_at=$7,registration_closes_at=$8,capacity=$9,waitlist_limit=$10,version=version+1,updated_at=now()
-WHERE id=$1 AND version=$11 AND status IN ('DRAFT','REJECTED') RETURNING id, unit_id, created_by, title, description, location, start_at, end_at, registration_opens_at, registration_closes_at, capacity, waitlist_limit, registered_count, waitlist_count, status, approved_by, approved_at, reject_reason, published_at, cancelled_at, cancel_reason, version, created_at, updated_at
+WHERE id=$1 AND version=$11 AND status IN ('DRAFT','REJECTED','PUBLISHED') RETURNING id, unit_id, created_by, title, description, location, start_at, end_at, registration_opens_at, registration_closes_at, capacity, waitlist_limit, registered_count, waitlist_count, status, approved_by, approved_at, reject_reason, published_at, cancelled_at, cancel_reason, version, created_at, updated_at
 `
 
 type UpdateDraftEventParams struct {

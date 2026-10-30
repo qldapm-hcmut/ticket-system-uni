@@ -12,26 +12,42 @@ import (
 
 type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
+	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
+	CountMyRegistrations(ctx context.Context, arg CountMyRegistrationsParams) (int64, error)
 	CountPendingEvents(ctx context.Context) (int64, error)
 	CreateAuthSession(ctx context.Context, arg CreateAuthSessionParams) (AuthSession, error)
 	CreateDraftEvent(ctx context.Context, arg CreateDraftEventParams) (Event, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
+	DecrementRegistrationCounter(ctx context.Context, arg DecrementRegistrationCounterParams) error
+	FindWaitlistHead(ctx context.Context, eventID pgtype.UUID) (Registration, error)
+	GetActiveRegistration(ctx context.Context, arg GetActiveRegistrationParams) (Registration, error)
 	GetEvent(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventCreator(ctx context.Context, id pgtype.UUID) (GetEventCreatorRow, error)
+	GetEventForRegistration(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventForUpdate(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventUnit(ctx context.Context, id pgtype.UUID) (GetEventUnitRow, error)
+	GetRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByGoogleSub(ctx context.Context, googleSub pgtype.Text) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserRoles(ctx context.Context, id pgtype.UUID) (GetUserRolesRow, error)
+	IncrementPromotedCounters(ctx context.Context, id pgtype.UUID) error
+	IncrementRegistered(ctx context.Context, id pgtype.UUID) error
+	IncrementWaitlist(ctx context.Context, id pgtype.UUID) error
+	IsRegistrationWindowOpen(ctx context.Context, id pgtype.UUID) (pgtype.Bool, error)
 	IsUnitOrganizer(ctx context.Context, arg IsUnitOrganizerParams) (bool, error)
 	LinkGoogleIdentity(ctx context.Context, arg LinkGoogleIdentityParams) (User, error)
 	ListActiveUnits(ctx context.Context, kind string) ([]Unit, error)
 	ListManagedEvents(ctx context.Context, arg ListManagedEventsParams) ([]Event, error)
+	ListMyRegistrations(ctx context.Context, arg ListMyRegistrationsParams) ([]Registration, error)
 	ListPendingEvents(ctx context.Context, arg ListPendingEventsParams) ([]Event, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
+	NotifyRegistration(ctx context.Context, arg NotifyRegistrationParams) error
+	PromoteRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
+	PromoteWaitlistForCapacity(ctx context.Context, arg PromoteWaitlistForCapacityParams) (int32, error)
+	RegisterStudent(ctx context.Context, arg RegisterStudentParams) (RegisterStudentRow, error)
 	RejectEvent(ctx context.Context, arg RejectEventParams) (Event, error)
 	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
 	SubmitEvent(ctx context.Context, arg SubmitEventParams) (Event, error)
