@@ -13,7 +13,9 @@ import (
 type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
 	AuditEventChange(ctx context.Context, arg AuditEventChangeParams) error
+	AuditManualCheckin(ctx context.Context, id pgtype.UUID) error
 	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
+	CheckInRegistration(ctx context.Context, arg CheckInRegistrationParams) (Registration, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
 	CountMyRegistrations(ctx context.Context, arg CountMyRegistrationsParams) (int64, error)
@@ -30,6 +32,7 @@ type Querier interface {
 	GetEventForUpdate(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventUnit(ctx context.Context, id pgtype.UUID) (GetEventUnitRow, error)
 	GetRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
+	GetRegistrationByCheckinCode(ctx context.Context, arg GetRegistrationByCheckinCodeParams) (Registration, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByGoogleSub(ctx context.Context, googleSub pgtype.Text) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
@@ -53,6 +56,7 @@ type Querier interface {
 	RejectEvent(ctx context.Context, arg RejectEventParams) (Event, error)
 	RevokeAuthSession(ctx context.Context, arg RevokeAuthSessionParams) error
 	SubmitEvent(ctx context.Context, arg SubmitEventParams) (Event, error)
+	UndoRegistrationCheckin(ctx context.Context, arg UndoRegistrationCheckinParams) (UndoRegistrationCheckinRow, error)
 	UpdateCancellationExceptions(ctx context.Context, arg UpdateCancellationExceptionsParams) (int64, error)
 	UpdateDraftEvent(ctx context.Context, arg UpdateDraftEventParams) (Event, error)
 }
