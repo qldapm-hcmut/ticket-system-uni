@@ -54,7 +54,9 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		eventStore := eventpg.New(pool)
 		eventReader := eventpg.NewReader(pool, kernel.SystemClock{})
 		eventhttp.New(eventapp.New(eventStore, kernel.SystemClock{}), eventReader).Register(e, authHandler.Authenticate)
-		reghttp.New(regapp.New(regpg.New(pool))).Register(e, authHandler.Authenticate)
+		registrationStore := regpg.New(pool)
+		reghttp.New(regapp.New(registrationStore)).Register(e, authHandler.Authenticate)
+		reghttp.NewCheckin(registrationStore).Register(e, authHandler.Authenticate)
 		return nil
 	}, OnStop: func(context.Context) error { cancel(); return nil }})
 	return nil

@@ -164,6 +164,121 @@ func TestRegistrationPersistence(t *testing.T) {
 		}
 		return out
 	}
+	t.Run("checkin audit failures rollback", func(t *testing.T) {
+		e := event(1, 2)
+		reg := seed(e, 1)[0]
+		store := New(pool)
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '30 minutes',end_at=now()+interval '2 hours',registration_closes_at=now()+interval '10 minutes' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		install := func() {
+			t.Helper()
+			if _, err := pool.Exec(ctx, `CREATE FUNCTION reject_checkin_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected audit failure'; END $$; CREATE TRIGGER reject_checkin_audit BEFORE INSERT ON activity_logs FOR EACH ROW EXECUTE FUNCTION reject_checkin_audit()`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		remove := func() {
+			t.Helper()
+			if _, err := pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_checkin_audit ON activity_logs; DROP FUNCTION IF EXISTS reject_checkin_audit()`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		defer remove()
+		install()
+		if _, err := store.CheckIn(ctx, owner, e, a.CheckinInput{Method: "MANUAL", RegistrationID: reg.ID, Note: "Card verified"}); err == nil {
+			t.Fatal("expected manual audit failure")
+		}
+		var checked bool
+		if err := pool.QueryRow(ctx, `SELECT checked_in_at IS NOT NULL FROM registrations WHERE id=$1`, reg.ID).Scan(&checked); err != nil {
+			t.Fatal(err)
+		}
+		if checked {
+			t.Fatal("manual checkin persisted")
+		}
+		remove()
+		if _, err := store.CheckIn(ctx, owner, e, a.CheckinInput{Method: "CODE", Code: reg.CheckinCode}); err != nil {
+			t.Fatal(err)
+		}
+		install()
+		if err := store.UndoCheckIn(ctx, owner, reg.ID); err == nil {
+			t.Fatal("expected undo audit failure")
+		}
+		if err := pool.QueryRow(ctx, `SELECT checked_in_at IS NOT NULL FROM registrations WHERE id=$1`, reg.ID).Scan(&checked); err != nil {
+			t.Fatal(err)
+		}
+		if !checked {
+			t.Fatal("undo persisted despite audit failure")
+		}
+	})
+	t.Run("checkin service eligibility authorization and undo", func(t *testing.T) {
+		e := event(1, 2)
+		regs := seed(e, 2)
+		store := New(pool)
+		input := a.CheckinInput{Method: "MANUAL", RegistrationID: regs[0].ID, Note: "Verified student card"}
+		if _, err := store.CheckIn(ctx, owner, e, input); !errors.Is(err, a.ErrCheckinWindow) {
+			t.Fatalf("expected window error: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '30 minutes',end_at=now()+interval '2 hours',registration_closes_at=now()+interval '10 minutes' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CheckIn(ctx, user(), e, input); !errors.Is(err, a.ErrNotFound) {
+			t.Fatalf("unauthorized: %v", err)
+		}
+		waiting := input
+		waiting.RegistrationID = regs[1].ID
+		if _, err := store.CheckIn(ctx, owner, e, waiting); !errors.Is(err, a.ErrCheckinEligibility) {
+			t.Fatalf("waitlist: %v", err)
+		}
+		result, err := store.CheckIn(ctx, owner, e, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Method != "MANUAL" || result.RegistrationID != regs[0].ID {
+			t.Fatalf("result %+v", result)
+		}
+		var duplicate *a.AlreadyCheckedIn
+		if _, err := store.CheckIn(ctx, owner, e, input); !errors.As(err, &duplicate) {
+			t.Fatalf("duplicate: %v", err)
+		}
+		if err := store.UndoCheckIn(ctx, owner, regs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UndoCheckIn(ctx, owner, regs[0].ID); !errors.Is(err, a.ErrNotFound) {
+			t.Fatalf("second undo: %v", err)
+		}
+		var logs int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_logs WHERE event_id=$1 AND action IN ('MANUAL_CHECKIN','UNDO_CHECKIN')`, e).Scan(&logs); err != nil {
+			t.Fatal(err)
+		}
+		if logs != 2 {
+			t.Fatalf("audit count=%d", logs)
+		}
+		if _, err := store.CheckIn(ctx, owner, e, a.CheckinInput{Method: "CODE", Code: strings.ToLower(regs[0].CheckinCode)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UndoCheckIn(ctx, owner, regs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		task := func() error {
+			_, err := store.CheckIn(ctx, owner, e, a.CheckinInput{Method: "CODE", Code: regs[0].CheckinCode})
+			return err
+		}
+		success, duplicates := 0, 0
+		for _, err := range concurrent(task, task) {
+			var d *a.AlreadyCheckedIn
+			if err == nil {
+				success++
+			} else if errors.As(err, &d) {
+				duplicates++
+			} else {
+				t.Fatal(err)
+			}
+		}
+		if success != 1 || duplicates != 1 {
+			t.Fatalf("success=%d duplicate=%d", success, duplicates)
+		}
+		counters(e, 1, 1)
+	})
 	t.Run("checkin SQL concurrent update and audited undo", func(t *testing.T) {
 		e := event(1, 2)
 		reg := seed(e, 1)[0]
@@ -352,6 +467,7 @@ func TestRegistrationPersistence(t *testing.T) {
 		router := echo.New()
 		eventhttp.New(es, eventpg.NewReader(pool, kernel.SystemClock{})).Register(router, authHandler.Authenticate)
 		reghttp.New(service).Register(router, authHandler.Authenticate)
+		reghttp.NewCheckin(New(pool)).Register(router, authHandler.Authenticate)
 		server := httptest.NewServer(router)
 		defer server.Close()
 		client := &http.Client{Timeout: 10 * time.Second}
@@ -386,6 +502,9 @@ func TestRegistrationPersistence(t *testing.T) {
 				t.Fatalf("want HTTP %d", want)
 			}
 			var out map[string]any
+			if response.StatusCode == 204 {
+				return out
+			}
 			if err := json.Unmarshal(raw, &out); err != nil {
 				t.Fatal(err)
 			}
@@ -421,6 +540,39 @@ func TestRegistrationPersistence(t *testing.T) {
 		request("POST", "/api/v1/registrations/"+first["id"].(string)+"/cancel", `{}`, s1, 0, 200)
 		counters(e, 1, 0)
 		request("GET", path, "", owner, 0, 200)
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '30 minutes',end_at=now()+interval '2 hours',registration_closes_at=now()+interval '10 minutes' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		admin := user()
+		if _, err := pool.Exec(ctx, `UPDATE users SET is_admin=true WHERE id=$1`, admin); err != nil {
+			t.Fatal(err)
+		}
+		outsider := user()
+		var otherUnit string
+		if err := pool.QueryRow(ctx, `INSERT INTO units(code,name,type) VALUES ('OTHER','Other','FACULTY') RETURNING id::text`).Scan(&otherUnit); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO unit_memberships(user_id,unit_id,member_role) VALUES ($1,$2,'ORGANIZER')`, outsider, otherUnit); err != nil {
+			t.Fatal(err)
+		}
+		checkPath := path + "/check-ins"
+		rid := second["id"].(string)
+		body := `{"method":"MANUAL","registrationId":"` + rid + `","note":"Verified card"}`
+		request("POST", checkPath, body, admin, 0, 403)
+		request("POST", checkPath, body, outsider, 0, 404)
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`","note":"Verified card"}`, "", 0, 401)
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`","note":"Verified card"}`, s2, 0, 403)
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`"}`, owner, 0, 400)
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`","note":"Verified card"}`, owner, 0, 201)
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`","note":"Verified card"}`, owner, 0, 409)
+		undoPath := "/api/v1/registrations/" + rid + "/check-in"
+		request("DELETE", undoPath, "", owner, 0, 204)
+		request("DELETE", undoPath, "", owner, 0, 404)
+		if _, err := pool.Exec(ctx, `INSERT INTO unit_memberships(user_id,unit_id,member_role) VALUES ($1,$2,'ORGANIZER')`, s2, unit); err != nil {
+			t.Fatal(err)
+		}
+		request("POST", checkPath, `{"method":"MANUAL","registrationId":"`+rid+`","note":"Self"}`, s2, 0, 403)
+		request("DELETE", undoPath, "", s2, 0, 403)
 	})
 	t.Run("published significant changes and cancellation exceptions", func(t *testing.T) {
 		e := event(1, 5)
