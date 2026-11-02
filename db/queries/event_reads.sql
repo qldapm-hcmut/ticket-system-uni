@@ -18,3 +18,26 @@ SELECT id,code,name FROM units WHERE id=$1;
 
 -- name: GetEventCreator :one
 SELECT id,full_name FROM users WHERE id=$1;
+
+-- name: ListPublishedEvents :many
+SELECT e.* FROM events e
+WHERE e.status='PUBLISHED'
+AND (sqlc.arg(unit_filter)::text='' OR e.unit_id::text=sqlc.arg(unit_filter))
+AND (sqlc.arg(search)::text='' OR strpos(lower(e.title),lower(sqlc.arg(search)::text))>0)
+AND (sqlc.narg(from_at)::timestamptz IS NULL OR e.start_at>=sqlc.narg(from_at))
+AND (sqlc.narg(to_at)::timestamptz IS NULL OR e.start_at<=sqlc.narg(to_at))
+AND (NOT sqlc.arg(available_only)::boolean OR (
+ e.registration_opens_at<=sqlc.arg(now_at)::timestamptz AND sqlc.arg(now_at)<e.registration_closes_at
+ AND (e.registered_count<e.capacity OR e.waitlist_limit IS NULL OR e.waitlist_count<e.waitlist_limit)))
+ORDER BY e.start_at,e.id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
+
+-- name: CountPublishedEvents :one
+SELECT count(*) FROM events e
+WHERE e.status='PUBLISHED'
+AND (sqlc.arg(unit_filter)::text='' OR e.unit_id::text=sqlc.arg(unit_filter))
+AND (sqlc.arg(search)::text='' OR strpos(lower(e.title),lower(sqlc.arg(search)::text))>0)
+AND (sqlc.narg(from_at)::timestamptz IS NULL OR e.start_at>=sqlc.narg(from_at))
+AND (sqlc.narg(to_at)::timestamptz IS NULL OR e.start_at<=sqlc.narg(to_at))
+AND (NOT sqlc.arg(available_only)::boolean OR (
+ e.registration_opens_at<=sqlc.arg(now_at)::timestamptz AND sqlc.arg(now_at)<e.registration_closes_at
+ AND (e.registered_count<e.capacity OR e.waitlist_limit IS NULL OR e.waitlist_count<e.waitlist_limit)));

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/db"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
@@ -73,6 +74,33 @@ func (r *Reader) Managed(ctx context.Context, actor application.Actor, f applica
 		return nil, 0, err
 	}
 	rows, err := r.q.ListManagedEvents(ctx, db.ListManagedEventsParams{IsAdmin: actor.IsAdmin, ActorID: uid, UnitFilter: f.UnitID, StatusFilter: f.Status, Search: f.Search, PageSize: f.PageSize, PageOffset: (f.Page - 1) * f.PageSize})
+	if err != nil {
+		return nil, 0, err
+	}
+	out := []map[string]any{}
+	for _, row := range rows {
+		item, err := r.render(ctx, row)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, item)
+	}
+	return out, count, nil
+}
+
+func (r *Reader) Catalog(ctx context.Context, f application.CatalogFilter) ([]map[string]any, int64, error) {
+	timestamp := func(t *time.Time) pgtype.Timestamptz {
+		if t == nil {
+			return pgtype.Timestamptz{}
+		}
+		return pgtype.Timestamptz{Time: *t, Valid: true}
+	}
+	params := db.CountPublishedEventsParams{UnitFilter: f.UnitID, Search: f.Search, FromAt: timestamp(f.From), ToAt: timestamp(f.To), AvailableOnly: f.AvailableOnly, NowAt: pgtype.Timestamptz{Time: r.clock.Now(), Valid: true}}
+	count, err := r.q.CountPublishedEvents(ctx, params)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.q.ListPublishedEvents(ctx, db.ListPublishedEventsParams{UnitFilter: params.UnitFilter, Search: params.Search, FromAt: params.FromAt, ToAt: params.ToAt, AvailableOnly: params.AvailableOnly, NowAt: params.NowAt, PageSize: f.PageSize, PageOffset: (f.Page - 1) * f.PageSize})
 	if err != nil {
 		return nil, 0, err
 	}

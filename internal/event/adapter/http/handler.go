@@ -25,6 +25,7 @@ func New(s *application.Service, r application.Reader) *Handler { return &Handle
 func (h *Handler) Register(e *echo.Echo, authenticate echo.MiddlewareFunc) {
 	g := e.Group("/api/v1", authenticate)
 	g.GET("/units", h.units)
+	g.GET("/events", h.catalog)
 	g.POST("/events", h.create)
 	g.PATCH("/events/:id", h.patch)
 	g.GET("/events/:id", h.detail)

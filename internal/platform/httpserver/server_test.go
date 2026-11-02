@@ -1,10 +1,13 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +50,27 @@ func TestHealthAndErrors(t *testing.T) {
 				t.Fatal("missing request ID")
 			}
 		})
+	}
+}
+
+func TestAccessLogDoesNotExposeCredentials(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	e := New(fakeDB{})
+	req := httptest.NewRequest("GET", "/missing?token=private-query", nil)
+	req.Header.Set("Authorization", "Bearer private-bearer")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	var entry map[string]any
+	if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["status"] != float64(404) || entry["method"] != "GET" || entry["request_id"] == "" {
+		t.Fatalf("log %v", entry)
+	}
+	if strings.Contains(output.String(), "private-") {
+		t.Fatal("credentials leaked into access log")
 	}
 }

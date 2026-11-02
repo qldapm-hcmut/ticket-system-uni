@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/qldapm-hcmut/ticket-system-uni/internal/db"
 )
 
 // Each run creates a separate database; never migrate/down the caller's database.
@@ -79,6 +81,7 @@ func TestInitialSchema(t *testing.T) {
 	exec(`INSERT INTO events (id,unit_id,created_by,title,location,start_at,end_at,registration_opens_at,registration_closes_at,capacity)
  VALUES ('00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001','Test','Room',now()+interval '2 days',now()+interval '3 days',now(),now()+interval '1 day',1)`)
 	exec(`INSERT INTO registrations (event_id,student_id,status,checkin_code) VALUES ('00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000001','REGISTERED','ABCDEFGH')`)
+	testPublishedCatalog(t, ctx, conn)
 	tests := []struct{ name, sql, constraint string }{
 		{"capacity", `UPDATE events SET registered_count=2`, "chk_capacity"},
 		{"self approval", `UPDATE events SET approved_by=created_by`, "chk_no_self_approve"},
@@ -94,5 +97,47 @@ func TestInitialSchema(t *testing.T) {
 				t.Fatalf("want constraint %s, got %v", tt.constraint, err)
 			}
 		})
+	}
+}
+
+func testPublishedCatalog(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	q := db.New(conn)
+	p := db.CountPublishedEventsParams{NowAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}}
+	assertCount := func(want int64) {
+		t.Helper()
+		got, err := q.CountPublishedEvents(ctx, p)
+		if err != nil || got != want {
+			t.Fatalf("catalog count %d want %d: %v", got, want, err)
+		}
+	}
+	assertCount(0)
+	if _, err := conn.Exec(ctx, "UPDATE events SET status='PUBLISHED'"); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(1)
+	p.Search = "missing"
+	assertCount(0)
+	p.Search = "test"
+	assertCount(1)
+	p.AvailableOnly = true
+	assertCount(1)
+	if _, err := conn.Exec(ctx, "UPDATE events SET registered_count=capacity,waitlist_limit=0"); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(0)
+	if _, err := conn.Exec(ctx, "UPDATE events SET waitlist_limit=NULL"); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(1)
+	p.FromAt = pgtype.Timestamptz{Time: time.Now().Add(4 * 24 * time.Hour), Valid: true}
+	assertCount(0)
+	p.FromAt = pgtype.Timestamptz{}
+	rows, err := q.ListPublishedEvents(ctx, db.ListPublishedEventsParams{Search: "test", NowAt: p.NowAt, AvailableOnly: true, PageSize: 1})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list catalog: %v %v", rows, err)
+	}
+	if _, err := conn.Exec(ctx, "UPDATE events SET registered_count=0,waitlist_limit=NULL,status='DRAFT'"); err != nil {
+		t.Fatal(err)
 	}
 }

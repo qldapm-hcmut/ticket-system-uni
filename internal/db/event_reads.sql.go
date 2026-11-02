@@ -40,6 +40,41 @@ func (q *Queries) CountManagedEvents(ctx context.Context, arg CountManagedEvents
 	return count, err
 }
 
+const countPublishedEvents = `-- name: CountPublishedEvents :one
+SELECT count(*) FROM events e
+WHERE e.status='PUBLISHED'
+AND ($1::text='' OR e.unit_id::text=$1)
+AND ($2::text='' OR strpos(lower(e.title),lower($2::text))>0)
+AND ($3::timestamptz IS NULL OR e.start_at>=$3)
+AND ($4::timestamptz IS NULL OR e.start_at<=$4)
+AND (NOT $5::boolean OR (
+ e.registration_opens_at<=$6::timestamptz AND $6<e.registration_closes_at
+ AND (e.registered_count<e.capacity OR e.waitlist_limit IS NULL OR e.waitlist_count<e.waitlist_limit)))
+`
+
+type CountPublishedEventsParams struct {
+	UnitFilter    string
+	Search        string
+	FromAt        pgtype.Timestamptz
+	ToAt          pgtype.Timestamptz
+	AvailableOnly bool
+	NowAt         pgtype.Timestamptz
+}
+
+func (q *Queries) CountPublishedEvents(ctx context.Context, arg CountPublishedEventsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPublishedEvents,
+		arg.UnitFilter,
+		arg.Search,
+		arg.FromAt,
+		arg.ToAt,
+		arg.AvailableOnly,
+		arg.NowAt,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getEventCreator = `-- name: GetEventCreator :one
 SELECT id,full_name FROM users WHERE id=$1
 `
@@ -99,6 +134,84 @@ func (q *Queries) ListManagedEvents(ctx context.Context, arg ListManagedEventsPa
 		arg.UnitFilter,
 		arg.StatusFilter,
 		arg.Search,
+		arg.PageOffset,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.UnitID,
+			&i.CreatedBy,
+			&i.Title,
+			&i.Description,
+			&i.Location,
+			&i.StartAt,
+			&i.EndAt,
+			&i.RegistrationOpensAt,
+			&i.RegistrationClosesAt,
+			&i.Capacity,
+			&i.WaitlistLimit,
+			&i.RegisteredCount,
+			&i.WaitlistCount,
+			&i.Status,
+			&i.ApprovedBy,
+			&i.ApprovedAt,
+			&i.RejectReason,
+			&i.PublishedAt,
+			&i.CancelledAt,
+			&i.CancelReason,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPublishedEvents = `-- name: ListPublishedEvents :many
+SELECT e.id, e.unit_id, e.created_by, e.title, e.description, e.location, e.start_at, e.end_at, e.registration_opens_at, e.registration_closes_at, e.capacity, e.waitlist_limit, e.registered_count, e.waitlist_count, e.status, e.approved_by, e.approved_at, e.reject_reason, e.published_at, e.cancelled_at, e.cancel_reason, e.version, e.created_at, e.updated_at FROM events e
+WHERE e.status='PUBLISHED'
+AND ($1::text='' OR e.unit_id::text=$1)
+AND ($2::text='' OR strpos(lower(e.title),lower($2::text))>0)
+AND ($3::timestamptz IS NULL OR e.start_at>=$3)
+AND ($4::timestamptz IS NULL OR e.start_at<=$4)
+AND (NOT $5::boolean OR (
+ e.registration_opens_at<=$6::timestamptz AND $6<e.registration_closes_at
+ AND (e.registered_count<e.capacity OR e.waitlist_limit IS NULL OR e.waitlist_count<e.waitlist_limit)))
+ORDER BY e.start_at,e.id LIMIT $8 OFFSET $7
+`
+
+type ListPublishedEventsParams struct {
+	UnitFilter    string
+	Search        string
+	FromAt        pgtype.Timestamptz
+	ToAt          pgtype.Timestamptz
+	AvailableOnly bool
+	NowAt         pgtype.Timestamptz
+	PageOffset    int32
+	PageSize      int32
+}
+
+func (q *Queries) ListPublishedEvents(ctx context.Context, arg ListPublishedEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listPublishedEvents,
+		arg.UnitFilter,
+		arg.Search,
+		arg.FromAt,
+		arg.ToAt,
+		arg.AvailableOnly,
+		arg.NowAt,
 		arg.PageOffset,
 		arg.PageSize,
 	)
