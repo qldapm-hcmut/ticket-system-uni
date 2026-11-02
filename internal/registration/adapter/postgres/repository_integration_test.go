@@ -28,6 +28,7 @@ import (
 	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
 	eventapp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/domain"
+	"github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/qrtoken"
 	a "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/shared/kernel"
 )
@@ -164,6 +165,74 @@ func TestRegistrationPersistence(t *testing.T) {
 		}
 		return out
 	}
+	t.Run("QR issuance ownership and checkin", func(t *testing.T) {
+		codec, err := qrtoken.New(strings.Repeat("q", 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := New(pool)
+		details := a.NewDetailService(store, codec)
+		checkins := a.NewCheckinService(store, codec)
+		e := event(1, 3)
+		regs := seed(e, 2)
+		detail, err := details.Detail(ctx, regs[0].StudentID, regs[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qr := *detail.QRToken
+		waiting, err := details.Detail(ctx, regs[1].StudentID, regs[1].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting.QRToken != nil {
+			t.Fatal("waitlist received QR")
+		}
+		if _, err := details.Detail(ctx, regs[1].StudentID, regs[0].ID); !errors.Is(err, a.ErrNotFound) {
+			t.Fatalf("ownership: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE events SET start_at=now()+interval '30 minutes',end_at=now()+interval '2 hours',registration_closes_at=now()+interval '10 minutes' WHERE id=$1`, e); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := checkins.CheckIn(ctx, owner, e, a.CheckinInput{Method: "QR", QRToken: qr + "a"}); !errors.Is(err, a.ErrInvalidQR) {
+			t.Fatalf("tamper: %v", err)
+		}
+		waitingQR := codec.Sign(regs[1].ID, e)
+		if _, err := checkins.CheckIn(ctx, owner, e, a.CheckinInput{Method: "QR", QRToken: waitingQR}); !errors.Is(err, a.ErrCheckinEligibility) {
+			t.Fatalf("waitlist eligibility: %v", err)
+		}
+		result, err := checkins.CheckIn(ctx, owner, e, a.CheckinInput{Method: "QR", QRToken: qr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Method != "QR" {
+			t.Fatal("wrong method")
+		}
+		if err := store.UndoCheckIn(ctx, owner, regs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		task := func() error {
+			_, err := checkins.CheckIn(ctx, owner, e, a.CheckinInput{Method: "QR", QRToken: qr})
+			return err
+		}
+		successes, duplicates := 0, 0
+		for _, err := range concurrent(task, task) {
+			var d *a.AlreadyCheckedIn
+			if err == nil {
+				successes++
+			} else if errors.As(err, &d) {
+				duplicates++
+			} else {
+				t.Fatal(err)
+			}
+		}
+		if successes != 1 || duplicates != 1 {
+			t.Fatalf("QR concurrency: %d %d", successes, duplicates)
+		}
+		var duplicate *a.AlreadyCheckedIn
+		if _, err := checkins.CheckIn(ctx, owner, e, a.CheckinInput{Method: "QR", QRToken: qr}); !errors.As(err, &duplicate) {
+			t.Fatalf("duplicate: %v", err)
+		}
+	})
 	t.Run("checkin audit failures rollback", func(t *testing.T) {
 		e := event(1, 2)
 		reg := seed(e, 1)[0]
@@ -467,7 +536,13 @@ func TestRegistrationPersistence(t *testing.T) {
 		router := echo.New()
 		eventhttp.New(es, eventpg.NewReader(pool, kernel.SystemClock{})).Register(router, authHandler.Authenticate)
 		reghttp.New(service).Register(router, authHandler.Authenticate)
-		reghttp.NewCheckin(New(pool)).Register(router, authHandler.Authenticate)
+		codec, err := qrtoken.New(strings.Repeat("h", 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		registrationStore := New(pool)
+		reghttp.NewDetail(a.NewDetailService(registrationStore, codec)).Register(router, authHandler.Authenticate)
+		reghttp.NewCheckin(a.NewCheckinService(registrationStore, codec)).Register(router, authHandler.Authenticate)
 		server := httptest.NewServer(router)
 		defer server.Close()
 		client := &http.Client{Timeout: 10 * time.Second}
@@ -520,6 +595,14 @@ func TestRegistrationPersistence(t *testing.T) {
 		request("PATCH", path, `{"capacity":2}`, s1, 1, 403)
 		first := request("POST", path+"/registrations", `{}`, s1, 0, 201)["data"].(map[string]any)
 		second := request("POST", path+"/registrations", `{}`, s2, 0, 201)["data"].(map[string]any)
+		registrationPath := "/api/v1/registrations/" + first["id"].(string)
+		detail := request("GET", registrationPath, "", s1, 0, 200)["data"].(map[string]any)
+		qr := detail["qrToken"].(string)
+		request("GET", registrationPath, "", s2, 0, 404)
+		waitingDetail := request("GET", "/api/v1/registrations/"+second["id"].(string), "", s2, 0, 200)["data"].(map[string]any)
+		if waitingDetail["qrToken"] != nil || waitingDetail["waitlistPosition"] != float64(1) {
+			t.Fatalf("waitlist detail %+v", waitingDetail)
+		}
 		if second["status"] != "WAITLISTED" {
 			t.Fatal("expected waitlist")
 		}
@@ -556,6 +639,20 @@ func TestRegistrationPersistence(t *testing.T) {
 			t.Fatal(err)
 		}
 		checkPath := path + "/check-ins"
+		qrBody := func(value string) string {
+			raw, _ := json.Marshal(map[string]string{"method": "QR", "qrToken": value})
+			return string(raw)
+		}
+		request("POST", checkPath, qrBody(qr+"a"), owner, 0, 422)
+		otherEvent := event(1, 2)
+		request("POST", "/api/v1/events/"+otherEvent+"/check-ins", qrBody(qr), owner, 0, 422)
+		// The original registration was cancelled earlier; a valid signature cannot restore eligibility.
+		request("POST", checkPath, qrBody(qr), owner, 0, 422)
+		promotedDetail := request("GET", "/api/v1/registrations/"+second["id"].(string), "", s2, 0, 200)["data"].(map[string]any)
+		promotedQR := promotedDetail["qrToken"].(string)
+		request("POST", checkPath, qrBody(promotedQR), owner, 0, 201)
+		request("POST", checkPath, qrBody(promotedQR), owner, 0, 409)
+		request("DELETE", "/api/v1/registrations/"+second["id"].(string)+"/check-in", "", owner, 0, 204)
 		rid := second["id"].(string)
 		body := `{"method":"MANUAL","registrationId":"` + rid + `","note":"Verified card"}`
 		request("POST", checkPath, body, admin, 0, 403)

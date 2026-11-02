@@ -21,10 +21,8 @@ func (s *Store) CheckIn(ctx context.Context, actor, event string, in a.CheckinIn
 	if err != nil {
 		return out, err
 	}
+	// Input is validated and QR tokens resolved by application.CheckinService.
 	policy := a.CheckinPolicy{Clock: kernel.SystemClock{}}
-	if err := policy.ValidateInput(in); err != nil {
-		return out, err
-	}
 	err = s.runner.Do(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		q := s.q.WithTx(tx)
 		e, err := q.GetEvent(ctx, eid)

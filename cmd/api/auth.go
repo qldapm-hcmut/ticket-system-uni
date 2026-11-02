@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"net/http"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
@@ -19,6 +20,7 @@ import (
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/config"
 	reghttp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/http"
 	regpg "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/postgres"
+	"github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/qrtoken"
 	regapp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/shared/kernel"
 	"go.uber.org/fx"
@@ -35,6 +37,14 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		return err
 	}
 	tokens, err := token.New(cfg.JWTSecret, kernel.SystemClock{})
+	if err != nil {
+		return err
+	}
+	qrSecret, err := config.LoadQRSecret()
+	if err != nil {
+		return err
+	}
+	qr, err := qrtoken.New(qrSecret)
 	if err != nil {
 		return err
 	}
@@ -56,7 +66,8 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		eventhttp.New(eventapp.New(eventStore, kernel.SystemClock{}), eventReader).Register(e, authHandler.Authenticate)
 		registrationStore := regpg.New(pool)
 		reghttp.New(regapp.New(registrationStore)).Register(e, authHandler.Authenticate)
-		reghttp.NewCheckin(registrationStore).Register(e, authHandler.Authenticate)
+		reghttp.NewDetail(regapp.NewDetailService(registrationStore, qr)).Register(e, authHandler.Authenticate)
+		reghttp.NewCheckin(regapp.NewCheckinService(registrationStore, qr)).Register(e, authHandler.Authenticate)
 		return nil
 	}, OnStop: func(context.Context) error { cancel(); return nil }})
 	return nil
