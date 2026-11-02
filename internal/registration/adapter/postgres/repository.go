@@ -18,7 +18,9 @@ type Store struct {
 	q      *db.Queries
 }
 
-func New(pool *pgxpool.Pool) *Store { return &Store{platform.NewTransactionRunner(pool), db.New(pool)} }
+func New(pool *pgxpool.Pool) *Store {
+	return &Store{runner: platform.NewTransactionRunner(pool), q: db.New(pool)}
+}
 func (s *Store) Do(ctx context.Context, fn func(context.Context, a.RegistrationRepository) error) error {
 	return s.runner.Do(ctx, func(ctx context.Context, tx pgx.Tx) error { return translate(fn(ctx, &repo{s.q.WithTx(tx)})) })
 }

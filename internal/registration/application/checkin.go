@@ -10,6 +10,7 @@ import (
 )
 
 var (
+	ErrInvalidQR          = errors.New("invalid QR")
 	ErrSelfCheckin        = errors.New("self check-in forbidden")
 	ErrCheckinWindow      = errors.New("check-in window closed")
 	ErrCheckinEligibility = errors.New("not eligible for check-in")
@@ -22,7 +23,12 @@ type AlreadyCheckedIn struct {
 
 func (e *AlreadyCheckedIn) Error() string { return "already checked in" }
 
+type QRCodec interface {
+	Sign(string, string) string
+	Verify(string, string) (string, error)
+}
 type CheckinInput struct {
+	QRToken        string `json:"qrToken"`
 	Method         string `json:"method"`
 	Code           string `json:"checkinCode"`
 	RegistrationID string `json:"registrationId"`
@@ -54,6 +60,10 @@ type CheckinPolicy struct{ Clock kernel.Clock }
 
 func (p CheckinPolicy) ValidateInput(in CheckinInput) error {
 	switch in.Method {
+	case "QR":
+		if in.QRToken == "" || in.Code != "" || in.RegistrationID != "" || in.Note != "" {
+			return ErrValidation
+		}
 	case "CODE":
 		code := strings.ToUpper(strings.ReplaceAll(in.Code, "-", ""))
 		if len(code) != 8 || in.RegistrationID != "" || in.Note != "" {

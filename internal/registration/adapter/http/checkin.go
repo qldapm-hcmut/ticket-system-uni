@@ -12,9 +12,9 @@ import (
 	a "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/application"
 )
 
-type CheckinHandler struct{ store a.CheckinStore }
+type CheckinHandler struct{ svc *a.CheckinService }
 
-func NewCheckin(store a.CheckinStore) *CheckinHandler { return &CheckinHandler{store} }
+func NewCheckin(svc *a.CheckinService) *CheckinHandler { return &CheckinHandler{svc} }
 func (h *CheckinHandler) Register(e *echo.Echo, authn echo.MiddlewareFunc) {
 	g := e.Group("/api/v1", authn)
 	g.POST("/events/:id/check-ins", h.checkin)
@@ -27,6 +27,8 @@ func checkinError(c echo.Context, err error) error {
 	}
 	status, code := 0, ""
 	switch {
+	case errors.Is(err, a.ErrInvalidQR):
+		status, code = 422, "INVALID_QR"
 	case errors.Is(err, a.ErrSelfCheckin):
 		status, code = 403, "SELF_CHECKIN_NOT_ALLOWED"
 	case errors.Is(err, a.ErrCheckinWindow):
@@ -57,7 +59,7 @@ func (h *CheckinHandler) checkin(c echo.Context) error {
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return mapErr(c, a.ErrValidation)
 	}
-	result, err := h.store.CheckIn(c.Request().Context(), p.ID, c.Param("id"), in)
+	result, err := h.svc.CheckIn(c.Request().Context(), p.ID, c.Param("id"), in)
 	if err != nil {
 		return checkinError(c, err)
 	}
@@ -68,7 +70,7 @@ func (h *CheckinHandler) undo(c echo.Context) error {
 	if len(p.Memberships) == 0 {
 		return mapErr(c, a.ErrForbidden)
 	}
-	if err := h.store.UndoCheckIn(c.Request().Context(), p.ID, c.Param("id")); err != nil {
+	if err := h.svc.UndoCheckIn(c.Request().Context(), p.ID, c.Param("id")); err != nil {
 		return checkinError(c, err)
 	}
 	return c.NoContent(204)

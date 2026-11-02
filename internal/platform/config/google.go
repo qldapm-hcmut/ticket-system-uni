@@ -14,3 +14,13 @@ func LoadGoogleClientID() (string, error) {
 	}
 	return id, nil
 }
+
+// LoadQRSecret returns the HMAC key for registration QR tokens. Length is
+// validated by the token service; this only rejects a missing value.
+func LoadQRSecret() (string, error) {
+	secret := os.Getenv("QR_HMAC_SECRET")
+	if strings.TrimSpace(secret) == "" {
+		return "", errors.New("QR_HMAC_SECRET is required")
+	}
+	return secret, nil
+}
