@@ -20,6 +20,9 @@ import (
 	regpg "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/postgres"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/qrtoken"
 	regapp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/application"
+	reporthttp "github.com/qldapm-hcmut/ticket-system-uni/internal/report/adapter/http"
+	reportpg "github.com/qldapm-hcmut/ticket-system-uni/internal/report/adapter/postgres"
+	reportapp "github.com/qldapm-hcmut/ticket-system-uni/internal/report/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/shared/kernel"
 	"go.uber.org/fx"
 )
@@ -62,6 +65,7 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		eventStore := eventpg.New(pool)
 		eventReader := eventpg.NewReader(pool, kernel.SystemClock{})
 		registerEventHandlers(e, eventStore, eventReader, authHandler.Authenticate)
+		reporthttp.New(reportapp.New(reportpg.New(pool, kernel.SystemClock{}))).Register(e, authHandler.Authenticate)
 		registrationStore := regpg.New(pool)
 		reghttp.New(regapp.New(registrationStore)).Register(e, authHandler.Authenticate)
 		reghttp.NewDetail(regapp.NewDetailService(registrationStore, qr)).Register(e, authHandler.Authenticate)

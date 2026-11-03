@@ -14,6 +14,7 @@ type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
 	AuditEventChange(ctx context.Context, arg AuditEventChangeParams) error
 	AuditManualCheckin(ctx context.Context, id pgtype.UUID) error
+	AuditReportExport(ctx context.Context, arg AuditReportExportParams) error
 	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
 	CheckInRegistration(ctx context.Context, arg CheckInRegistrationParams) (Registration, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
@@ -35,6 +36,8 @@ type Querier interface {
 	GetOwnedRegistrationView(ctx context.Context, arg GetOwnedRegistrationViewParams) (GetOwnedRegistrationViewRow, error)
 	GetRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
 	GetRegistrationByCheckinCode(ctx context.Context, arg GetRegistrationByCheckinCodeParams) (Registration, error)
+	GetReportEvent(ctx context.Context, arg GetReportEventParams) (GetReportEventRow, error)
+	GetReportSummary(ctx context.Context, eventID pgtype.UUID) (GetReportSummaryRow, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByGoogleSub(ctx context.Context, googleSub pgtype.Text) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
@@ -50,6 +53,7 @@ type Querier interface {
 	ListMyRegistrations(ctx context.Context, arg ListMyRegistrationsParams) ([]Registration, error)
 	ListPendingEvents(ctx context.Context, arg ListPendingEventsParams) ([]Event, error)
 	ListPublishedEvents(ctx context.Context, arg ListPublishedEventsParams) ([]Event, error)
+	ListReportRegistrations(ctx context.Context, arg ListReportRegistrationsParams) ([]ListReportRegistrationsRow, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
 	NotifyEventChanged(ctx context.Context, eventID pgtype.UUID) (int64, error)
 	NotifyRegistration(ctx context.Context, arg NotifyRegistrationParams) error
