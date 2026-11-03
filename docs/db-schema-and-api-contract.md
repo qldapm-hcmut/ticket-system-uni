@@ -595,6 +595,10 @@ Lỗi: `409 ALREADY_CHECKED_IN` (kèm `details.checkedInAt`, `details.checkedInB
   "meta": { "unreadCount": 2, "page": 1, "pageSize": 20, "totalItems": 5, "totalPages": 1 } }
 ```
 
+N1 chỉ trả thông báo của user đang đăng nhập, sắp xếp `created_at DESC, id DESC`; `page` mặc định 1, `pageSize` mặc định 20, tối đa 100. `unread=true` lọc chưa đọc; `totalItems` theo bộ lọc, `unreadCount` luôn là tổng chưa đọc của user. Danh sách rỗng trả `data: []`. Frontend polling mỗi 10 giây khi đã đăng nhập và tab hiển thị; quay lại tab fetch ngay. Backend không chạy timer polling; response có `Cache-Control: no-store`.
+
+**N2 `POST /me/notifications/read`** — nhận đúng một trong `{ "ids": ["uuid", ...] }` (1–100 UUID) hoặc `{ "all": true }`. Trả `{ "data": { "updatedCount": 1, "unreadCount": 0 } }`. Chỉ cập nhật thông báo chưa đọc thuộc user hiện tại; ID không tồn tại/thuộc người khác bị bỏ qua, không làm lộ dữ liệu. Gọi lại idempotent, giữ nguyên `readAt`. Body/filter sai trả `400 VALIDATION_ERROR`. Đánh dấu đọc không thay đổi trạng thái email/outbox. Không có API cho Admin đọc hộ người khác.
+
 Nhắc lịch (`REMINDER`) do job chạy 24h trước `startAt` — chức năng bổ trợ, làm sau cùng (Q1).
 
 ## 6. Phân quyền & xử lý đồng thời

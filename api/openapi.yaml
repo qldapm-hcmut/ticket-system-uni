@@ -1017,6 +1017,10 @@ paths:
       tags: [Notifications]
       operationId: listMyNotifications
       summary: N1 — Thông báo in-app
+      description: |
+        Chỉ thông báo của user hiện tại; sắp xếp createdAt DESC, id DESC.
+        unreadCount là tổng chưa đọc của user, totalItems theo bộ lọc.
+        Frontend poll mỗi 10 giây khi tab hiển thị; response no-store.
       parameters:
         - name: unread
           in: query
@@ -1042,6 +1046,7 @@ paths:
                         required: [unreadCount]
                         properties:
                           unreadCount: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
 
   /me/notifications/read:
@@ -1049,6 +1054,9 @@ paths:
       tags: [Notifications]
       operationId: markNotificationsRead
       summary: N2 — Đánh dấu đã đọc
+      description: |
+        Idempotent, chỉ cập nhật thông báo chưa đọc của user hiện tại.
+        ID không tồn tại hoặc thuộc user khác bị bỏ qua. Không đổi trạng thái email.
       requestBody:
         required: true
         content:
@@ -1056,13 +1064,16 @@ paths:
             schema:
               oneOf:
                 - type: object
+                  additionalProperties: false
                   required: [ids]
                   properties:
                     ids:
                       type: array
                       minItems: 1
+                      maxItems: 100
                       items: { type: string, format: uuid }
                 - type: object
+                  additionalProperties: false
                   required: [all]
                   properties:
                     all: { type: boolean, const: true }
