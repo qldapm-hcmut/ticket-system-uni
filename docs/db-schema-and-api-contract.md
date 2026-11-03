@@ -24,7 +24,7 @@ Hệ thống dùng PostgreSQL và REST/JSON. Mọi bất biến nghiệp vụ đ
 | Sửa/hủy sau công bố (Q19) | Sửa không cần duyệt lại; đổi thời gian/địa điểm → ghi `activity_logs` (`UPDATE_EVENT`, `isSignificant`) + notify; hủy → hủy toàn bộ registration và waitlist + notify |
 | QR + nhập mã + xác nhận tay, không check-out (Q2) | Mỗi registration có `checkin_code` 8 ký tự và QR token ký HMAC; check-in ghi vào cột `checked_in_at` của chính registration, chỉ ghi được khi cột còn NULL |
 | Tài khoản trường qua Google OAuth 2.0 / OpenID Connect (phạm vi cập nhật) | Backend xác minh Google ID token, email_verified và domain/hd hcmut.edu.vn; liên kết bằng Google sub, cấp JWT nội bộ |
-| Báo cáo + xuất Excel/CSV, không tích hợp ĐRL (Q6) | Endpoint summary + export `csv`/`xlsx` |
+| Báo cáo + xuất Excel/CSV, không tích hợp ĐRL (Q6) | Endpoint summary + export CSV (Excel đọc được); XLSX để giai đoạn sau |
 | Phân quyền theo đơn vị (Q20) | `unit_memberships` gắn Organizer với đơn vị; Admin là quản trị viên cấp trường và có quyền xem/duyệt toàn trường, nhưng KHÔNG check-in |
 
 **Giả định của nhóm** (ghi rõ là assumption trong báo cáo, theo Q7):
@@ -393,7 +393,7 @@ Response lỗi:
 | C2 | GET | `/events/{eventId}/check-ins` | Organizer, Admin | Danh sách đã check-in |
 | C3 | DELETE | `/registrations/{registrationId}/check-in` | Organizer | Hoàn tác check-in nhầm (ghi audit) |
 | B1 | GET | `/events/{eventId}/reports/summary` | Organizer, Admin | Thống kê số lượng |
-| B2 | GET | `/events/{eventId}/exports/{kind}` | Organizer, Admin | Xuất `registrations` hoặc `attendance`, `?format=csv\|xlsx` |
+| B2 | GET | `/events/{eventId}/exports/{kind}` | Organizer, Admin | Xuất `registrations` hoặc `attendance`, `?format=csv` (mặc định) |
 | N1 | GET | `/me/notifications` | Đã đăng nhập | Thông báo in-app, `?unread=true` |
 | N2 | POST | `/me/notifications/read` | Đã đăng nhập | Đánh dấu đã đọc: `{ "ids": [...] }` hoặc `{ "all": true }` |
 
@@ -581,7 +581,7 @@ Lỗi: `409 ALREADY_CHECKED_IN` (kèm `details.checkedInAt`, `details.checkedInB
 
 `attendanceRate = registered == 0 ? 0 : checkedIn / registered`. `waitlisted` chỉ đếm WAITLISTED còn hiệu lực (`now < start_at`), trả 0 từ start_at dù worker chưa chạy.
 
-**B2 `GET /events/{eventId}/exports/{kind}?format=xlsx`** — `kind = registrations | attendance`. Trả file trực tiếp (`Content-Disposition: attachment`), CSV có BOM UTF-8 để Excel đọc đúng tiếng Việt. Cột `attendance`: STT, MSSV, Họ tên, Email, Trạng thái đăng ký, Thời gian check-in, Phương thức. Mỗi lần xuất ghi `activity_logs` (dữ liệu cá nhân).
+**B2 `GET /events/{eventId}/exports/{kind}?format=csv`** — `kind = registrations | attendance`. MVP hỗ trợ CSV (mặc định); XLSX để giai đoạn sau, format khác trả `400 VALIDATION_ERROR`. Trả file trực tiếp (`Content-Disposition: attachment`), CSV có BOM UTF-8 để Excel đọc đúng tiếng Việt và vô hiệu hóa ô có thể chạy công thức. Cả hai loại dùng cột: STT, MSSV, Họ tên, Email, Trạng thái đăng ký, Thời gian check-in, Phương thức. `registrations` gồm mọi trạng thái; `attendance` chỉ gồm đăng ký đã check-in. Mỗi lần xuất ghi `activity_logs` (`EXPORT_DATA`, metadata kind/format/rowCount, không chứa dữ liệu cá nhân) và chỉ trả file sau khi audit commit thành công. Báo cáo và export đọc trên snapshot nhất quán; Organizer chỉ đơn vị active được gán, Admin toàn trường.
 
 ### 5.7 Notifications
 

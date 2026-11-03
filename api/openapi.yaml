@@ -978,11 +978,11 @@ paths:
     get:
       tags: [Reports]
       operationId: exportEventData
-      summary: B2 — Xuất danh sách đăng ký / điểm danh ra CSV hoặc XLSX
+      summary: B2 — Xuất danh sách đăng ký / điểm danh ra CSV
       description: |
         Trả file trực tiếp với `Content-Disposition: attachment`. CSV có BOM UTF-8 để Excel đọc đúng tiếng Việt.
         Cột `attendance`: STT, MSSV, Họ tên, Email, Trạng thái đăng ký, Thời gian check-in, Phương thức.
-        Mỗi lần xuất được ghi audit log.
+        Mỗi lần xuất được ghi audit log trước khi trả file. Hiện hỗ trợ CSV; XLSX để giai đoạn sau.
       parameters:
         - $ref: '#/components/parameters/EventId'
         - name: kind
@@ -995,20 +995,19 @@ paths:
           in: query
           schema:
             type: string
-            enum: [csv, xlsx]
-            default: xlsx
+            enum: [csv]
+            default: csv
       responses:
         '200':
           description: File
           headers:
             Content-Disposition:
               schema: { type: string }
-              example: attachment; filename="attendance_e7a1c2d4.xlsx"
+              example: attachment; filename="attendance.csv"
           content:
             text/csv:
               schema: { type: string }
-            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
-              schema: { type: string, contentMediaType: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
 
