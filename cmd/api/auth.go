@@ -14,9 +14,7 @@ import (
 	authpg "github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/postgres"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/token"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/application"
-	eventhttp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/http"
 	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
-	eventapp "github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/config"
 	reghttp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/http"
 	regpg "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/postgres"
@@ -63,7 +61,7 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		authHandler.Register(e)
 		eventStore := eventpg.New(pool)
 		eventReader := eventpg.NewReader(pool, kernel.SystemClock{})
-		eventhttp.New(eventapp.New(eventStore, kernel.SystemClock{}), eventReader).Register(e, authHandler.Authenticate)
+		registerEventHandlers(e, eventStore, eventReader, authHandler.Authenticate)
 		registrationStore := regpg.New(pool)
 		reghttp.New(regapp.New(registrationStore)).Register(e, authHandler.Authenticate)
 		reghttp.NewDetail(regapp.NewDetailService(registrationStore, qr)).Register(e, authHandler.Authenticate)

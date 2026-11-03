@@ -378,6 +378,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Event' }
                   meta: { $ref: '#/components/schemas/PageMeta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
     post:
       tags: [Events]

@@ -20,6 +20,7 @@ type Querier interface {
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
 	CountMyRegistrations(ctx context.Context, arg CountMyRegistrationsParams) (int64, error)
 	CountPendingEvents(ctx context.Context) (int64, error)
+	CountPublishedEvents(ctx context.Context, arg CountPublishedEventsParams) (int64, error)
 	CreateAuthSession(ctx context.Context, arg CreateAuthSessionParams) (AuthSession, error)
 	CreateDraftEvent(ctx context.Context, arg CreateDraftEventParams) (Event, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
@@ -48,6 +49,7 @@ type Querier interface {
 	ListManagedEvents(ctx context.Context, arg ListManagedEventsParams) ([]Event, error)
 	ListMyRegistrations(ctx context.Context, arg ListMyRegistrationsParams) ([]Registration, error)
 	ListPendingEvents(ctx context.Context, arg ListPendingEventsParams) ([]Event, error)
+	ListPublishedEvents(ctx context.Context, arg ListPublishedEventsParams) ([]Event, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
 	NotifyEventChanged(ctx context.Context, eventID pgtype.UUID) (int64, error)
 	NotifyRegistration(ctx context.Context, arg NotifyRegistrationParams) error

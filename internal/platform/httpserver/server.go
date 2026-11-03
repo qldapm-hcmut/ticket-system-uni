@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -16,7 +17,14 @@ func New(db Pinger) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
-	e.Use(middleware.RequestID(), middleware.Recover(), middleware.BodyLimit("1M"))
+	e.Use(middleware.RequestID(), middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		HandleError: true, LogStatus: true, LogMethod: true, LogRoutePath: true, LogLatency: true, LogRequestID: true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			// Route templates exclude query strings, tokens and resource identifiers.
+			slog.Info("http request", "method", v.Method, "route", v.RoutePath, "status", v.Status, "latency", v.Latency, "request_id", v.RequestID)
+			return nil
+		},
+	}), middleware.Recover(), middleware.BodyLimit("1M"))
 	e.HTTPErrorHandler = func(err error, c echo.Context) {
 		if c.Response().Committed {
 			return
