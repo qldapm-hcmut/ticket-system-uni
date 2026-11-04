@@ -12,6 +12,7 @@ type ApprovalRepository interface {
 	Approve(context.Context, string, int32, string) (domain.Event, error)
 	Reject(context.Context, string, int32, string) (domain.Event, error)
 	Pending(context.Context, int32, int32) ([]domain.Event, int64, error)
+	Audit(context.Context, string, string, string, string) error
 }
 type ApprovalUnitOfWork interface {
 	DoApproval(context.Context, func(ApprovalRepository) error) error
@@ -40,7 +41,10 @@ func (s *ApprovalService) Submit(ctx context.Context, a Actor, id string, versio
 			return domain.ErrState
 		}
 		out, err = r.Submit(ctx, id, e.Version)
-		return err
+		if err != nil {
+			return err
+		}
+		return r.Audit(ctx, a.ID, id, "SUBMIT", "")
 	})
 	return out, err
 }
@@ -64,7 +68,10 @@ func (s *ApprovalService) Approve(ctx context.Context, a Actor, id string, versi
 			return domain.ErrState
 		}
 		out, err = r.Approve(ctx, id, e.Version, a.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		return r.Audit(ctx, a.ID, id, "APPROVE", "")
 	})
 	return out, err
 }
@@ -85,7 +92,10 @@ func (s *ApprovalService) Reject(ctx context.Context, a Actor, id string, versio
 			return domain.ErrState
 		}
 		out, err = r.Reject(ctx, id, e.Version, reason)
-		return err
+		if err != nil {
+			return err
+		}
+		return r.Audit(ctx, a.ID, id, "REJECT", reason)
 	})
 	return out, err
 }

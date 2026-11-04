@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/db"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/event/application"
@@ -13,6 +14,26 @@ func (s *Store) DoApproval(ctx context.Context, fn func(application.ApprovalRepo
 }
 
 type approvalRepo struct{ q *db.Queries }
+
+func (r *approvalRepo) Audit(ctx context.Context, actor, eventID, action, reason string) error {
+	aid, err := id(actor)
+	if err != nil {
+		return err
+	}
+	eid, err := id(eventID)
+	if err != nil {
+		return err
+	}
+	metadata := map[string]any{}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return r.q.AuditApprovalAction(ctx, db.AuditApprovalActionParams{ActorID: aid, EventID: eid, Action: action, Metadata: raw})
+}
 
 func (r *approvalRepo) Get(ctx context.Context, raw string, lock bool) (domain.Event, error) {
 	u, err := id(raw)
