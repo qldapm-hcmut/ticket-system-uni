@@ -526,9 +526,17 @@ paths:
       tags: [Events]
       operationId: cancelEvent
       summary: E7 — Hủy sự kiện đã công bố
-      description: PUBLISHED → CANCELLED; mọi REGISTERED/WAITLISTED → CANCELLED_BY_EVENT và nhận notification.
+      description: |
+        Organizer thuộc đơn vị active: PUBLISHED → CANCELLED; mọi REGISTERED/WAITLISTED
+        → CANCELLED_BY_EVENT và nhận notification. Counter về 0, audit CANCEL_EVENT
+        và notification commit cùng transaction. Admin không tự có quyền hủy.
+        If-Match tùy chọn; nếu có phải khớp version hiện tại.
       parameters:
         - $ref: '#/components/parameters/EventId'
+        - name: If-Match
+          in: header
+          required: false
+          schema: { type: integer, minimum: 1 }
       requestBody:
         required: true
         content:
@@ -553,6 +561,7 @@ paths:
                     required: [affectedCount]
                     properties:
                       affectedCount: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
