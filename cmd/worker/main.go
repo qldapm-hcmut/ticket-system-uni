@@ -4,6 +4,9 @@ package main
 import (
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
+
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/config"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/postgres"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/worker"
@@ -12,7 +15,9 @@ import (
 
 func main() {
 	fx.New(
-		fx.Provide(config.Load, postgres.NewPool),
+		fx.Provide(config.Load, postgres.NewPool,
+			func(pool *pgxpool.Pool) worker.Jobs { return eventpg.New(pool) },
+		),
 		fx.Invoke(worker.RegisterLifecycle),
 		fx.StartTimeout(15*time.Second),
 		fx.StopTimeout(10*time.Second),
