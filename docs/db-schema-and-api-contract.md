@@ -728,6 +728,8 @@ Check-in không đụng bộ đếm nên không khóa dòng `events`: nhiều m�
 | Email outbox | Mỗi 30 giây | Gửi notification `email_status = PENDING`; lỗi thì tăng `email_attempts`, tối đa 5 lần rồi đánh dấu FAILED |
 | Đóng waitlist | Mỗi 5 phút | Khóa events; sự kiện đã tới `start_at`: WAITLISTED → EXPIRED, waitlist_count = 0, cùng transaction. Đây là đồng bộ dữ liệu lưu, không quyết định thời điểm hết hiệu lực nghiệp vụ |
 | Hoàn tất sự kiện | Mỗi 15 phút | PUBLISHED và quá `end_at` → COMPLETED |
+
+Hai job vòng đời chạy ngay khi worker khởi động, sau đó theo lịch trên. Xử lý batch tối đa 100 event/transaction, khóa event với `FOR UPDATE SKIP LOCKED` trước khi cập nhật registrations để phối hợp nhiều worker và không đảo thứ tự khóa với request. Job hoàn tất cũng đóng waitlist trong cùng transaction, không phụ thuộc job 5 phút chạy trước. Chạy lại không cập nhật/notify trùng; không tạo notification hay email cho EXPIRED/COMPLETED. Hoàn tất tăng event version một lần. Mỗi lượt job có timeout 2 phút; lỗi retry ở tick kế tiếp. Fx shutdown hủy context và đợi job dừng trước khi đóng DB pool.
 | Nhắc lịch | Mỗi giờ | Tạo notification REMINDER cho sự kiện bắt đầu trong 24h tới (bổ trợ, Q1) |
 
 ## 7. Truy vết yêu cầu & tiêu chí nghiệm thu
