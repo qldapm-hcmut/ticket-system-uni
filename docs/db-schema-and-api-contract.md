@@ -494,7 +494,7 @@ Validation: người gọi phải là ORGANIZER của `unitId`; `endAt > startAt
   "meta": { "significantChange": true, "notifiedCount": 127, "promotedCount": 0 } }
 ```
 
-**E7 `POST /events/{eventId}/cancel`** — `{ "reason": "Diễn giả bận đột xuất" }`. PUBLISHED → CANCELLED; mọi registration REGISTERED/WAITLISTED → `CANCELLED_BY_EVENT`, đếm về 0, notify `EVENT_CANCELLED`. Trả `meta.affectedCount`.
+**E7 `POST /events/{eventId}/cancel`** — `{ "reason": "Diễn giả bận đột xuất" }` (không được chỉ whitespace, tối đa 500 ký tự). Chỉ Organizer của đơn vị active được hủy; Admin không tự có quyền này. PUBLISHED → CANCELLED; mọi registration REGISTERED/WAITLISTED → `CANCELLED_BY_EVENT`, xóa ngoại lệ hủy, đếm về 0, notify `EVENT_CANCELLED`. Giữ lịch sử check-in; không promote khi hủy sự kiện. Khóa event trước registrations; event, registrations, notification và audit `CANCEL_EVENT` commit cùng transaction, lỗi bất kỳ rollback toàn bộ. `If-Match` tùy chọn; sai version trả `409 VERSION_CONFLICT`, không phải PUBLISHED trả `409 INVALID_STATE_TRANSITION`. Trả `meta.affectedCount` (số registration active bị hủy).
 
 ### 5.3 Duyệt sự kiện
 
