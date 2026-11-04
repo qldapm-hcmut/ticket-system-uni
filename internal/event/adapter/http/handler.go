@@ -27,6 +27,7 @@ func (h *Handler) Register(e *echo.Echo, authenticate echo.MiddlewareFunc) {
 	g.GET("/units", h.units)
 	g.GET("/events", h.catalog)
 	g.POST("/events", h.create)
+	g.POST("/events/:id/cancel", h.cancel)
 	g.PATCH("/events/:id", h.patch)
 	g.GET("/events/:id", h.detail)
 	g.GET("/manage/events", h.managed)

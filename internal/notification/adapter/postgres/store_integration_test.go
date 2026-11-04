@@ -252,9 +252,12 @@ func TestNotificationFlow(t *testing.T) {
 	if out := list(student, "?unread=true"); out.Data == nil || len(out.Data) != 0 || out.Meta.TotalItems != 0 {
 		t.Fatalf("all read: %+v", out)
 	}
-	// EVENT_CANCELLED fixture tests inbox representation only: the event-cancel
-	// use case is not implemented yet, so this is not a cancellation E2E test.
-	cancelledID := scalar(`INSERT INTO notifications(user_id,event_id,type,title,body) VALUES($1,$2,'EVENT_CANCELLED','Cancelled','Event cancelled') RETURNING id::text`, student, event)
+	// Cancel the real event; registered users receive the committed notification.
+	cancelled, err := events.Cancel(ctx, eventapp.Actor{ID: owner, IsOrganizer: true}, event, 2, "Venue unavailable")
+	if err != nil || cancelled.AffectedCount != 1 || cancelled.Event.Status != "CANCELLED" {
+		t.Fatalf("cancel event: %+v %v", cancelled, err)
+	}
+	cancelledID := scalar(`SELECT id::text FROM notifications WHERE user_id=$1 AND event_id=$2 AND type='EVENT_CANCELLED'`, student, event)
 	if out := list(student, "?unread=true"); len(out.Data) != 1 || out.Data[0].ID != cancelledID || out.Data[0].Type != "EVENT_CANCELLED" {
 		t.Fatal(out)
 	}
