@@ -12,9 +12,12 @@ import (
 
 type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
+	AuditEventCancellation(ctx context.Context, arg AuditEventCancellationParams) error
 	AuditEventChange(ctx context.Context, arg AuditEventChangeParams) error
 	AuditManualCheckin(ctx context.Context, id pgtype.UUID) error
 	AuditReportExport(ctx context.Context, arg AuditReportExportParams) error
+	CancelEventRegistrations(ctx context.Context, arg CancelEventRegistrationsParams) (int64, error)
+	CancelPublishedEvent(ctx context.Context, arg CancelPublishedEventParams) (Event, error)
 	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
 	CheckInRegistration(ctx context.Context, arg CheckInRegistrationParams) (Registration, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
