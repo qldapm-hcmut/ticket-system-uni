@@ -689,6 +689,7 @@ paths:
       tags: [Approval]
       operationId: listApprovalLogs
       summary: P5 — Lịch sử submit/approve/reject
+      description: Organizer thuộc đơn vị active hoặc Admin. Chỉ audit SUBMIT/APPROVE/REJECT, tăng dần theo createdAt và id; không phân trang.
       parameters:
         - $ref: '#/components/parameters/EventId'
       responses:
@@ -756,6 +757,11 @@ paths:
       tags: [Registrations]
       operationId: listEventRegistrations
       summary: R5 — Danh sách đăng ký / waitlist của sự kiện (Organizer, Admin)
+      description: |
+        Organizer thuộc đơn vị active hoặc Admin. Sắp queueSeq tăng dần, id làm tie-break.
+        WAITLISTED quá startAt được trả EXPIRED dù worker chưa chạy.
+        waitlistPosition là vị trí trong toàn bộ waitlist còn hiệu lực, trước khi lọc q/phân trang.
+        q tìm chuỗi literal không phân biệt hoa thường theo tên/MSSV, tối đa 200 bytes. Response no-store.
       parameters:
         - $ref: '#/components/parameters/EventId'
         - name: status
@@ -782,6 +788,7 @@ paths:
                   meta: { $ref: '#/components/schemas/PageMeta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/ValidationError' }
 
   /registrations/{registrationId}:
     get:
@@ -924,6 +931,7 @@ paths:
       tags: [Check-in]
       operationId: listCheckIns
       summary: C2 — Danh sách đã check-in (Organizer, Admin)
+      description: Organizer thuộc đơn vị active hoặc Admin; sắp checkedInAt DESC, registrationId DESC. Undo biến mất khỏi danh sách; giữ lịch sử check-in còn lưu của event bị hủy. Response no-store.
       parameters:
         - $ref: '#/components/parameters/EventId'
         - name: method
@@ -946,6 +954,7 @@ paths:
                   meta: { $ref: '#/components/schemas/PageMeta' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/ValidationError' }
 
   /registrations/{registrationId}/check-in:
     delete:

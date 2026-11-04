@@ -10,5 +10,6 @@ import (
 
 func registerEventHandlers(e *echo.Echo, store *eventpg.Store, reader eventapp.Reader, authenticate echo.MiddlewareFunc) {
 	eventhttp.New(eventapp.New(store, kernel.SystemClock{}), reader).Register(e, authenticate)
+	eventhttp.NewManagementHandler(eventapp.NewManagementService(store)).Register(e, authenticate)
 	eventhttp.NewApprovalHandler(eventapp.NewApprovalService(store), reader).Register(e, authenticate)
 }
