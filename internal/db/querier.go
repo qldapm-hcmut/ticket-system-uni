@@ -20,6 +20,8 @@ type Querier interface {
 	CancelPublishedEvent(ctx context.Context, arg CancelPublishedEventParams) (Event, error)
 	CancelRegistration(ctx context.Context, arg CancelRegistrationParams) (Registration, error)
 	CheckInRegistration(ctx context.Context, arg CheckInRegistrationParams) (Registration, error)
+	ClearEventWaitlistCount(ctx context.Context, id pgtype.UUID) error
+	CompletePublishedEvent(ctx context.Context, id pgtype.UUID) (int64, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
 	CountMyNotifications(ctx context.Context, arg CountMyNotificationsParams) (CountMyNotificationsRow, error)
@@ -30,6 +32,7 @@ type Querier interface {
 	CreateDraftEvent(ctx context.Context, arg CreateDraftEventParams) (Event, error)
 	CreateGoogleUser(ctx context.Context, arg CreateGoogleUserParams) (User, error)
 	DecrementRegistrationCounter(ctx context.Context, arg DecrementRegistrationCounterParams) error
+	ExpireEventWaitlist(ctx context.Context, eventID pgtype.UUID) (int64, error)
 	FindWaitlistHead(ctx context.Context, eventID pgtype.UUID) (Registration, error)
 	GetActiveRegistration(ctx context.Context, arg GetActiveRegistrationParams) (Registration, error)
 	GetEvent(ctx context.Context, id pgtype.UUID) (Event, error)
@@ -60,6 +63,8 @@ type Querier interface {
 	ListPublishedEvents(ctx context.Context, arg ListPublishedEventsParams) ([]Event, error)
 	ListReportRegistrations(ctx context.Context, arg ListReportRegistrationsParams) ([]ListReportRegistrationsRow, error)
 	ListUserMemberships(ctx context.Context, userID pgtype.UUID) ([]ListUserMembershipsRow, error)
+	LockCompletedEvents(ctx context.Context, batchSize int32) ([]pgtype.UUID, error)
+	LockExpiredWaitlistEvents(ctx context.Context, batchSize int32) ([]pgtype.UUID, error)
 	MarkMyNotificationsRead(ctx context.Context, arg MarkMyNotificationsReadParams) (int64, error)
 	NotifyEventChanged(ctx context.Context, eventID pgtype.UUID) (int64, error)
 	NotifyRegistration(ctx context.Context, arg NotifyRegistrationParams) error
