@@ -15,6 +15,9 @@ import (
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/adapter/token"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/auth/application"
 	eventpg "github.com/qldapm-hcmut/ticket-system-uni/internal/event/adapter/postgres"
+	notifhttp "github.com/qldapm-hcmut/ticket-system-uni/internal/notification/adapter/http"
+	notifpg "github.com/qldapm-hcmut/ticket-system-uni/internal/notification/adapter/postgres"
+	notifapp "github.com/qldapm-hcmut/ticket-system-uni/internal/notification/application"
 	"github.com/qldapm-hcmut/ticket-system-uni/internal/platform/config"
 	reghttp "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/http"
 	regpg "github.com/qldapm-hcmut/ticket-system-uni/internal/registration/adapter/postgres"
@@ -62,6 +65,7 @@ func registerAuth(lc fx.Lifecycle, e *echo.Echo, pool *pgxpool.Pool) error {
 		service := application.NewService(authpg.NewUnitOfWork(pool), verifier, tokens, kernel.SystemClock{})
 		authHandler := authhttp.New(service, tokens, authpg.NewProfileReader(pool))
 		authHandler.Register(e)
+		notifhttp.New(notifapp.New(notifpg.New(pool))).Register(e, authHandler.Authenticate)
 		eventStore := eventpg.New(pool)
 		eventReader := eventpg.NewReader(pool, kernel.SystemClock{})
 		registerEventHandlers(e, eventStore, eventReader, authHandler.Authenticate)
