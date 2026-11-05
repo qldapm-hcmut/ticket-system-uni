@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	ApproveEvent(ctx context.Context, arg ApproveEventParams) (Event, error)
+	AuditApprovalAction(ctx context.Context, arg AuditApprovalActionParams) error
 	AuditEventCancellation(ctx context.Context, arg AuditEventCancellationParams) error
 	AuditEventChange(ctx context.Context, arg AuditEventChangeParams) error
 	AuditManualCheckin(ctx context.Context, id pgtype.UUID) error
@@ -23,6 +24,8 @@ type Querier interface {
 	ClearEventWaitlistCount(ctx context.Context, id pgtype.UUID) error
 	CompletePublishedEvent(ctx context.Context, id pgtype.UUID) (int64, error)
 	ConsumeAuthSession(ctx context.Context, arg ConsumeAuthSessionParams) (AuthSession, error)
+	CountEventCheckinViews(ctx context.Context, arg CountEventCheckinViewsParams) (int64, error)
+	CountEventRegistrationViews(ctx context.Context, arg CountEventRegistrationViewsParams) (int64, error)
 	CountManagedEvents(ctx context.Context, arg CountManagedEventsParams) (int64, error)
 	CountMyNotifications(ctx context.Context, arg CountMyNotificationsParams) (CountMyNotificationsRow, error)
 	CountMyRegistrations(ctx context.Context, arg CountMyRegistrationsParams) (int64, error)
@@ -40,6 +43,7 @@ type Querier interface {
 	GetEventForRegistration(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventForUpdate(ctx context.Context, id pgtype.UUID) (Event, error)
 	GetEventUnit(ctx context.Context, id pgtype.UUID) (GetEventUnitRow, error)
+	GetManagementScope(ctx context.Context, arg GetManagementScopeParams) (pgtype.UUID, error)
 	GetOwnedRegistrationView(ctx context.Context, arg GetOwnedRegistrationViewParams) (GetOwnedRegistrationViewRow, error)
 	GetRegistration(ctx context.Context, id pgtype.UUID) (Registration, error)
 	GetRegistrationByCheckinCode(ctx context.Context, arg GetRegistrationByCheckinCodeParams) (Registration, error)
@@ -56,6 +60,9 @@ type Querier interface {
 	IsUnitOrganizer(ctx context.Context, arg IsUnitOrganizerParams) (bool, error)
 	LinkGoogleIdentity(ctx context.Context, arg LinkGoogleIdentityParams) (User, error)
 	ListActiveUnits(ctx context.Context, kind string) ([]Unit, error)
+	ListEventApprovalViews(ctx context.Context, eventID pgtype.UUID) ([][]byte, error)
+	ListEventCheckinViews(ctx context.Context, arg ListEventCheckinViewsParams) ([][]byte, error)
+	ListEventRegistrationViews(ctx context.Context, arg ListEventRegistrationViewsParams) ([][]byte, error)
 	ListManagedEvents(ctx context.Context, arg ListManagedEventsParams) ([]Event, error)
 	ListMyNotifications(ctx context.Context, arg ListMyNotificationsParams) ([]ListMyNotificationsRow, error)
 	ListMyRegistrations(ctx context.Context, arg ListMyRegistrationsParams) ([]Registration, error)

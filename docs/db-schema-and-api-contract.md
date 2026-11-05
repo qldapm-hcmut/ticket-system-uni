@@ -543,7 +543,13 @@ Lỗi: `409 ALREADY_REGISTERED` (kèm `details.registrationId`), `409 EVENT_FULL
 
 `qrToken = v1.<registrationId>.<eventId>.<HMAC-SHA256(secret, registrationId|eventId)>`, frontend tự vẽ QR từ chuỗi này. Token không chứa thông tin cá nhân và không tự hết hạn; hiệu lực được kiểm tra bằng trạng thái registration lúc quét.
 
-**R5 `GET /events/{eventId}/registrations`** — query `status=REGISTERED|WAITLISTED|CANCELLED`, `q` (tên/MSSV), `page`. Waitlist sắp theo `queueSeq` tăng dần và trả `waitlistPosition`. Mỗi dòng: `student { id, fullName, studentCode, email }`, `status`, `createdAt`, `promotedAt`, `checkedInAt`.
+**R5 `GET /events/{eventId}/registrations`** — query `status` (mọi RegistrationStatus), `q` (tên/MSSV, literal không phân biệt hoa thường, tối đa 200 bytes), `page`, `pageSize` (mặc định 1/20, tối đa 100). Sắp `queueSeq, id` tăng dần; `waitlistPosition` tính trong toàn bộ waitlist còn hiệu lực trước lọc/tìm kiếm/phân trang. WAITLISTED quá `startAt` trả EXPIRED ngay cả khi worker chưa chạy. Mỗi dòng: `student { id, fullName, studentCode, email }`, `status`, `createdAt`, `promotedAt`, `checkedInAt` và các field nullable theo OpenAPI.
+
+**C2 `GET /events/{eventId}/check-ins`** — lọc `method=QR|CODE|MANUAL`, phân trang mặc định 1/20, tối đa 100; sắp `checkedInAt DESC, registrationId DESC`. Chỉ dòng có check-in còn lưu, undo loại khỏi danh sách; hủy event vẫn giữ lịch sử check-in.
+
+**P5 `GET /events/{eventId}/approval-logs`** — danh sách không phân trang, sắp `createdAt, id` tăng dần, chỉ SUBMIT/APPROVE/REJECT. Mỗi chuyển trạng thái ghi audit cùng transaction, REJECT lưu `metadata.reason` trả thành `comment`; dữ liệu cũ chưa ghi audit không được dựng lại giả.
+
+R5/C2/P5 chỉ Organizer thuộc đơn vị active hoặc Admin; user phải active, ngoài phạm vi/mất quyền trả 404. Đọc scope, count và rows trong cùng snapshot REPEATABLE READ. Trả mảng rỗng `[]`, response `Cache-Control: no-store`; không trả QR token/checkinCode trong danh sách quản lý.
 
 ### 5.5 Check-in
 
